@@ -93,6 +93,11 @@ class Lemmatizer:
             verbose=False,
         )
         self.udpipe_model = UDPipeModel.load(udpipe_model_path)
+        if self.udpipe_model is None:
+            raise FileNotFoundError(
+                f"UDPipe model failed to load. Check udpipe_model_path={udpipe_model_path!r} "
+                f"(wrong path or file missing)."
+            )
         self.udpipe = UDPipePipeline(
             self.udpipe_model,
             "tokenize",
@@ -100,6 +105,7 @@ class Lemmatizer:
             UDPipePipeline.DEFAULT,
             "conllu",
         )
+        
 
     def load_surface_lexicon_csv(self, path: str) -> dict[str, set[tuple[str, str]]]:
         """
