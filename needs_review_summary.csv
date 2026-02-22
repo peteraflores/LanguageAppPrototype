@@ -1,0 +1,21 @@
+# ==============================================================
+# NEEDS REVIEW SUMMARY
+#
+# How to use this file:
+# 1. Review high-count rows first.
+# 2. If neither tool is correct, manually enter the correct lemma.
+# 3. Fill in:
+#       approved_lemma
+#       approved_upos
+#       action = PROMOTE
+# 4. Leave action blank to ignore.
+# 5. Run promote_approved.py to add approved entries
+#    into surface_lemma_lexicon.csv
+#
+# Notes:
+# - surface_norm is what will be stored in the lexicon.
+# - Counts represent number of occurrences seen.
+# - You may override both tools if they are wrong.
+# ==============================================================
+
+count,surface_orig_example,surface_norm,stanza_lemma,stanza_upos,udpipe_lemma,udpipe_upos,decision,example_sentence,approved_lemma,approved_upos,action
