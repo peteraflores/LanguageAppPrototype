@@ -65,6 +65,7 @@ class Lemmatizer:
 
         # Load persistent agreement counts
         self._agree_counts = self._load_agree_counts(self.agree_counts_path)
+        self._agree_counts_dirty = False
 
         # Ensure review file exists
         if not os.path.exists(self.needs_review_path):
@@ -87,11 +88,10 @@ class Lemmatizer:
         self.nlp = stanza.Pipeline(
             lang="el",
             processors="tokenize,pos,lemma",
-            tokenize_no_ssplit=True,
+            tokenize_no_ssplit=False,
             use_gpu=False,
             verbose=False,
         )
-
         self.udpipe_model = UDPipeModel.load(udpipe_model_path)
         self.udpipe = UDPipePipeline(
             self.udpipe_model,
@@ -193,122 +193,91 @@ class Lemmatizer:
 
     def _maybe_promote_agree(self, surface_norm: str, lemma_norm: str, upos: str) -> bool:
         """
-        Promote only when Stanza and UDPipe agree (caller enforces) and
-        the agreement has been observed >= agree_min_count times this run.
-        Returns True if appended to trusted lexicon.
+        Promote only when Stanza and UDPipe agree (caller enforces) and the agreement
+        has been observed >= agree_min_count times (persisted in agree_counts.csv).
+
+        This is the ONLY promotion entry point. It increments the in-memory counter and
+        marks agree-counts as dirty; it does not write agree_counts.csv. The caller
+        should flush counts periodically (e.g., once per passage).
+
+        Returns True if the (surface, lemma, upos) triple was appended to the trusted lexicon.
         """
         triple = (surface_norm, lemma_norm, upos)
         if triple in self._lexicon_triples:
             return False
 
-        # count agreement occurrences this run
+        # Increment persistent agreement count (kept in memory until flushed)
         self._agree_counts[triple] = self._agree_counts.get(triple, 0) + 1
+        self._agree_counts_dirty = True
+
         if self._agree_counts[triple] < self.agree_min_count:
             return False
 
-        # append to trusted lexicon
-        write_header = not os.path.exists(self.lexicon_path)
-        with open(self.lexicon_path, "a", encoding="utf-8", newline="") as out:
-            writer = csv.writer(out)
-            if write_header:
-                writer.writerow(["surface", "lemma", "upos"])
-            writer.writerow([surface_norm, lemma_norm, upos])
-
-        # update in-memory
-        self.surface_lexicon.setdefault(surface_norm, set()).add((lemma_norm, upos))
-        self._lexicon_triples.add(triple)
+        # Append to trusted lexicon (single code path)
+        self._append_to_lexicon(surface_norm, lemma_norm, upos)
+        # Drop counter now that it's promoted
+        self._agree_counts.pop(triple, None)
+        self._agree_counts_dirty = True
         return True
 
     def lemmatize_passage(self, passage: str) -> list[tuple[str, str, str, str]]:
         doc = self.nlp(passage)
-
-        # Run UDPipe once for the whole passage (analysis source)
-        udpipe_tokens = self._parse_udpipe_conllu(self.udpipe.process(passage))
-        ud_i = 0
+        udpipe_sents = self._parse_udpipe_conllu_sents(self.udpipe.process(passage))
 
         results: list[tuple[str, str, str, str]] = []
-        token_index = 0
+        stream_index = 0  # index among *kept* (learnable) tokens only
 
-        for sent in doc.sentences:
+        for si, sent in enumerate(doc.sentences):
+            ud_tokens = udpipe_sents[si] if si < len(udpipe_sents) else []
+            ud_i = 0
+
             for word in sent.words:
                 original_surface = word.text
                 surface_clean = _strip_edge_punct(original_surface)
                 if not surface_clean:
+                    # Not a meaningful token; don't advance stream index.
                     continue
 
                 stanza_upos = (word.upos or "").upper()
 
-                # Optional: treat proper nouns separately
+                # Optionally skip proper nouns from the learnable stream.
                 if self.skip_propn and stanza_upos == "PROPN":
                     results.append((original_surface, _norm(surface_clean), "PROPN", "Stanza"))
-                    token_index += 1
                     continue
 
-                # Apply same token filters you used when building the lexicon
-                if not self._keep_token(surface_clean, stanza_upos or ""):
-                    token_index += 1
+                # Apply global token filters (digits, acronyms, punctuation-ish UPOS, etc.)
+                if not self._keep_token(surface_clean, stanza_upos):
                     continue
+
+                # This token counts toward the learnable stream.
+                token_index = stream_index
+                stream_index += 1
 
                 surface_norm = _norm(surface_clean)
 
-                # Lexicon fast path
+                # Trusted lexicon fast-path
                 lex = self._lexicon_lookup(surface_clean, stanza_upos)
                 if lex:
                     lemma, upos = lex
                     results.append((original_surface, lemma, upos, "Lexicon"))
-                    token_index += 1
                     continue
 
-                # Get Stanza analysis
                 stanza_lemma = _norm(word.lemma) if word.lemma else ""
                 stanza_upos_norm = stanza_upos or ""
 
-                # Get UDPipe analysis aligned by surface (best-effort)
-                udpipe_lemma = ""
-                udpipe_upos = ""
+                udpipe_lemma, udpipe_upos, ud_i, ud_matched = self._udpipe_match_next(
+                    ud_tokens, ud_i, surface_norm, lookahead=6
+                )
 
-                # advance until we find a matching surface_norm or we run out
-                target = surface_norm
-                while ud_i < len(udpipe_tokens):
-                    form, lemma, upos = udpipe_tokens[ud_i]
-                    ud_i += 1
-
-                    form_clean = _strip_edge_punct(form)
-                    if not form_clean:
-                        continue
-                    if not self._keep_token(form_clean, upos):
-                        continue
-
-                    if _norm(form_clean) == target:
-                        udpipe_lemma = _norm(lemma) if lemma and lemma != "_" else ""
-                        udpipe_upos = (upos or "").upper()
-                        break
-
-                # Decide what we output, and log disagreements
-                decision = ""
-                if stanza_lemma and udpipe_lemma:
+                # Decide what we output, and log issues for review
+                if stanza_lemma and ud_matched and udpipe_lemma:
+                    # Both have lemmas and we successfully aligned
                     if stanza_lemma == udpipe_lemma and stanza_upos_norm.upper() == udpipe_upos:
-                        decision = "AGREE"
-
-                        triple = (surface_norm, stanza_lemma, udpipe_upos)
-
-                        if self.auto_promote_agree and triple not in self._lexicon_triples:
-                            new_count = self._bump_agree_count(*triple)
-
-                            if new_count >= self.agree_min_count:
-                                self._append_to_lexicon(*triple)
-
-                            self._save_agree_counts()
-
-                        results.append(
-                            (original_surface, stanza_lemma, udpipe_upos, "Agree(Stanza+UDPipe)")
-                        )
+                        if self.auto_promote_agree:
+                            self._maybe_promote_agree(surface_norm, stanza_lemma, udpipe_upos)
+                        results.append((original_surface, stanza_lemma, udpipe_upos, "Agree(Stanza+UDPipe)"))
                     else:
-                        # disagreement
-                        if stanza_lemma != udpipe_lemma:
-                            decision = "DISAGREE_LEMMA"
-                        else:
-                            decision = "DISAGREE_UPOS"
+                        decision = "DISAGREE_LEMMA" if stanza_lemma != udpipe_lemma else "DISAGREE_UPOS"
                         self._append_needs_review(
                             token_index,
                             original_surface,
@@ -318,12 +287,15 @@ class Lemmatizer:
                             udpipe_lemma,
                             udpipe_upos,
                             decision,
-                            passage,
+                            sent.text,
                         )
-                        # runtime choice: prefer Stanza (you can flip this)
+                        # runtime choice: prefer Stanza
                         results.append((original_surface, stanza_lemma, stanza_upos_norm.upper(), "Stanza"))
-                elif stanza_lemma and not udpipe_lemma:
-                    decision = "ONLY_STANZA"
+                    continue
+
+                # If UDPipe didn't align, that's an alignment/tokenization issue—not "UDPipe had no analysis".
+                if stanza_lemma and not ud_matched:
+                    decision = "UDPIPE_ALIGN_MISS"
                     self._append_needs_review(
                         token_index,
                         original_surface,
@@ -333,10 +305,30 @@ class Lemmatizer:
                         "",
                         "",
                         decision,
-                        passage,
+                        sent.text,
                     )
                     results.append((original_surface, stanza_lemma, stanza_upos_norm.upper(), "Stanza"))
-                elif udpipe_lemma and not stanza_lemma:
+                    continue
+
+                # UDPipe aligned but produced no lemma (rare, but distinct from align miss)
+                if stanza_lemma and ud_matched and not udpipe_lemma:
+                    decision = "UDPIPE_EMPTY_LEMMA"
+                    self._append_needs_review(
+                        token_index,
+                        original_surface,
+                        surface_norm,
+                        stanza_lemma,
+                        stanza_upos_norm,
+                        "",
+                        udpipe_upos,
+                        decision,
+                        sent.text,
+                    )
+                    results.append((original_surface, stanza_lemma, stanza_upos_norm.upper(), "Stanza"))
+                    continue
+
+                # Only UDPipe has a lemma (and we aligned)
+                if udpipe_lemma and not stanza_lemma and ud_matched:
                     decision = "ONLY_UDPIPE"
                     self._append_needs_review(
                         token_index,
@@ -347,28 +339,33 @@ class Lemmatizer:
                         udpipe_lemma,
                         udpipe_upos,
                         decision,
-                        passage,
+                        sent.text,
                     )
                     results.append((original_surface, udpipe_lemma, udpipe_upos, "UDPipe"))
-                else:
-                    decision = "NO_ANALYSIS"
-                    self._append_needs_review(
-                        token_index,
-                        original_surface,
-                        surface_norm,
-                        "",
-                        stanza_upos_norm,
-                        "",
-                        "",
-                        decision,
-                        passage,
-                    )
-                    results.append((original_surface, surface_norm, stanza_upos_norm.upper(), "Fallback"))
+                    continue
 
-                token_index += 1
+                # No usable analysis from either (or stanza lemma missing and udpipe didn't match)
+                decision = "NO_ANALYSIS"
+                self._append_needs_review(
+                    token_index,
+                    original_surface,
+                    surface_norm,
+                    stanza_lemma or "",
+                    stanza_upos_norm,
+                    udpipe_lemma or "",
+                    udpipe_upos or "",
+                    decision,
+                    sent.text,
+                )
+                results.append((original_surface, surface_norm, stanza_upos_norm.upper(), "Fallback"))
+
+        # Flush agree-counts once per passage (avoid per-token disk writes)
+        if getattr(self, "_agree_counts_dirty", False):
+            self._save_agree_counts()
+            self._agree_counts_dirty = False
 
         return results
-    
+
     def _load_agree_counts(self, path: str) -> dict[tuple[str, str, str], int]:
         counts: dict[tuple[str, str, str], int] = {}
         if not os.path.exists(path):
@@ -383,11 +380,6 @@ class Lemmatizer:
                 counts[(s, l, u)] = c
         return counts
 
-    def _bump_agree_count(self, surface: str, lemma: str, upos: str) -> int:
-        key = (surface, lemma, upos)
-        self._agree_counts[key] = self._agree_counts.get(key, 0) + 1
-        return self._agree_counts[key]
-
     def _save_agree_counts(self) -> None:
         # write atomically so you don’t corrupt the file on crash
         tmp = self.agree_counts_path + ".tmp"
@@ -399,6 +391,16 @@ class Lemmatizer:
         os.replace(tmp, self.agree_counts_path)
 
     def _append_to_lexicon(self, surface: str, lemma: str, upos: str) -> None:
+        surface = _norm(surface)
+        lemma = _norm(lemma)
+        upos = (upos or "").strip().upper()
+        if not surface or not lemma or not upos:
+            return
+
+        triple = (surface, lemma, upos)
+        if triple in self._lexicon_triples:
+            return
+
         write_header = not os.path.exists(self.lexicon_path)
         with open(self.lexicon_path, "a", encoding="utf-8", newline="") as f:
             w = csv.writer(f)
@@ -407,4 +409,57 @@ class Lemmatizer:
             w.writerow([surface, lemma, upos])
 
         self.surface_lexicon.setdefault(surface, set()).add((lemma, upos))
-        self._lexicon_triples.add((surface, lemma, upos))
+        self._lexicon_triples.add(triple)
+    def _parse_udpipe_conllu_sents(self, conllu_text: str) -> list[list[tuple[str, str, str]]]:
+        sents: list[list[tuple[str, str, str]]] = []
+        cur: list[tuple[str, str, str]] = []
+        for line in conllu_text.splitlines():
+            line = line.strip()
+            if not line:
+                if cur:
+                    sents.append(cur)
+                    cur = []
+                continue
+            if line.startswith("#"):
+                continue
+            cols = line.split("\t")
+            if len(cols) < 4:
+                continue
+            tok_id = cols[0]
+            if "-" in tok_id or "." in tok_id:
+                continue
+            form, lemma, upos = cols[1], cols[2], cols[3]
+            cur.append((form, lemma, upos))
+        if cur:
+            sents.append(cur)
+        return sents
+    
+    def _udpipe_match_next(
+        self,
+        ud_tokens: list[tuple[str, str, str]],
+        start_i: int,
+        target_surface_norm: str,
+        lookahead: int = 6,
+    ) -> tuple[str, str, int, bool]:
+        """
+        Returns (ud_lemma_norm, ud_upos, next_index, matched).
+
+        - matched=False means we could not align the Stanza token to any UDPipe token
+        within the lookahead window (alignment/tokenization mismatch).
+        - matched=True with ud_lemma_norm=="" means we aligned, but UDPipe did not provide a lemma.
+
+        If no match in window, returns ("","", start_i, False) (i.e., don't advance).
+        """
+        n = len(ud_tokens)
+        for j in range(start_i, min(n, start_i + lookahead)):
+            form, lemma, upos = ud_tokens[j]
+            form_clean = _strip_edge_punct(form)
+            if not form_clean:
+                continue
+            if not self._keep_token(form_clean, upos):
+                continue
+            if _norm(form_clean) == target_surface_norm:
+                ud_lemma = _norm(lemma) if lemma and lemma != "_" else ""
+                ud_upos = (upos or "").upper()
+                return ud_lemma, ud_upos, j + 1, True
+        return "", "", start_i, False
