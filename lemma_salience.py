@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 
+FREE_UPOS: Set[str] = {"DET", "ADP", "CCONJ", "SCONJ", "PART", "PRON", "AUX"}
+
+def _is_free_upos(upos: str) -> bool:
+    return (upos or "").upper() in FREE_UPOS
+
 @dataclass(frozen=True)
 class LemmaStats:
     lemma: str
@@ -104,7 +109,7 @@ class LemmaSalienceRanker:
 
         for idx, (surface, lemma, upos, _source) in enumerate(rows):
             total_tokens += 1
-            if known_lemmas is not None and lemma in known_lemmas:
+            if known_lemmas is not None and (lemma in known_lemmas or _is_free_upos(upos)):
                 known_tokens += 1
 
             s_i = token_to_sentence.get(idx, 0)
@@ -160,8 +165,11 @@ class LemmaSalienceRanker:
         )
 
     def filter_known(self, analysis: PassageAnalysis, known_lemmas: Set[str]) -> List[LemmaStats]:
-        """Return ranked stats excluding known lemmas."""
-        return [s for s in analysis.ranked if s.lemma not in known_lemmas]
+        """Return ranked stats excluding known lemmas AND free UPOS."""
+        return [
+            s for s in analysis.ranked
+            if (s.lemma not in known_lemmas) and (not _is_free_upos(s.upos))
+        ]
 
     def choose_keep_set(
         self,

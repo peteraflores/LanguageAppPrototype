@@ -3,7 +3,7 @@ from lemma_salience import LemmaSalienceRanker
 
 print("boot")
 
-lemmatizer = Lemmatizer(surface_lexicon_path="surface_lexicon.csv", udpipe_model_path="greek-gdt-ud-2.5-191206.udpipe")
+lemmatizer = Lemmatizer(surface_lexicon_path="surface_lexicon.csv", udpipe_model_path="greek-gdt-ud-2.5-191206.udpipe",auto_promote_agree=False)
 print("lemmatizer ready")
 
 ranker = LemmaSalienceRanker(lemmatizer)
@@ -16,11 +16,15 @@ rows = lemmatizer.lemmatize_passage(passage)
 print("lemmatize_passage rows:", len(rows))
 print("sample rows:", rows[:5])
 
-analysis = ranker.analyze(passage)
-print("analysis total_tokens:", analysis.total_tokens)
-print("ranked lemmas:", len(analysis.ranked))
+analysis = ranker.analyze(passage, known_lemmas=set())
+unknown_ranked = ranker.filter_known(analysis, set())
 
-for s in analysis.ranked[:25]:
+print("analysis total_tokens:", analysis.total_tokens)
+print("ranked lemmas (all):", len(analysis.ranked))
+print("ranked lemmas (unknown candidates):", len(unknown_ranked))
+
+for s in unknown_ranked[:25]:
     print(s.score, s.lemma, s.upos, s.token_count, s.sentence_count, s.surface_forms[:3])
+
 
 print("done")
