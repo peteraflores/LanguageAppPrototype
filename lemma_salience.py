@@ -4,12 +4,109 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
-
+import csv
+import os
+import unicodedata
 
 FREE_UPOS: Set[str] = {"DET", "ADP", "CCONJ", "SCONJ", "PART", "PRON", "AUX"}
 
 def _is_free_upos(upos: str) -> bool:
     return (upos or "").upper() in FREE_UPOS
+
+def _norm_lemma(s: str) -> str:
+    # Match lemmatizer._norm behavior: NFC + strip + lowercase
+    return unicodedata.normalize("NFC", str(s)).strip().lower()
+
+
+def load_known_lemmas_csv(
+    path: str,
+    *,
+    keep_upos: Optional[Set[str]] = None,
+    drop_free_upos_rows: bool = False,
+) -> Set[str]:
+    """
+    Read known_lemma.csv with schema: lemma,upos
+
+    Returns a Set[str] of normalized lemmas.
+
+    Options:
+      - keep_upos: if provided, only include rows whose UPOS is in this set.
+                  Example: {"NOUN","VERB","ADJ","ADV"}
+      - drop_free_upos_rows: if True, rows whose UPOS is in FREE_UPOS are ignored.
+        (You already treat FREE_UPOS as "known for coverage" in analyze(), so this is
+         mostly useful if you want the file to represent only content-lemma knowledge.)
+    """
+    known: Set[str] = set()
+
+    if not path:
+        return known
+    if not os.path.exists(path):
+        return known
+
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+
+        # Be strict about expected headers; fail loud if the file is wrong,
+        # because silent partial loads are a debugging nightmare.
+        if not reader.fieldnames:
+            return known
+
+        # Allow minor header variations but insist lemma exists.
+        # (You said schema is lemma,upos, so we treat that as canonical.)
+        fieldnames = {h.strip().lower() for h in reader.fieldnames if h}
+        if "lemma" not in fieldnames:
+            raise ValueError(f"{path!r} is missing required header 'lemma'. Found: {reader.fieldnames!r}")
+
+        for row in reader:
+            if not row:
+                continue
+
+            lemma_raw = row.get("lemma", "")
+            upos_raw = row.get("upos", "")
+
+            lemma = _norm_lemma(lemma_raw)
+            if not lemma:
+                continue
+
+            upos = (upos_raw or "").strip().upper()
+
+            if drop_free_upos_rows and _is_free_upos(upos):
+                continue
+
+            if keep_upos is not None:
+                # If the CSV row has no UPOS, it won't pass the filter.
+                if upos not in keep_upos:
+                    continue
+
+            known.add(lemma)
+
+    return known
+
+def load_known_lemma_map_csv(path: str) -> Dict[str, str]:
+    """
+    Read known_lemma.csv and return Dict[lemma_norm -> UPOS].
+    If lemma repeats, the last row wins.
+    """
+    out: Dict[str, str] = {}
+    if not path or not os.path.exists(path):
+        return out
+
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames:
+            return out
+        fieldnames = {h.strip().lower() for h in reader.fieldnames if h}
+        if "lemma" not in fieldnames:
+            raise ValueError(f"{path!r} is missing required header 'lemma'. Found: {reader.fieldnames!r}")
+
+        for row in reader:
+            lemma = _norm_lemma(row.get("lemma", ""))
+            if not lemma:
+                continue
+            upos = (row.get("upos", "") or "").strip().upper()
+            out[lemma] = upos
+
+    return out
 
 @dataclass(frozen=True)
 class LemmaStats:

@@ -23,15 +23,6 @@ def _strip_edge_punct(tok: str) -> str:
 def _norm(s: str) -> str:
     return unicodedata.normalize("NFC", str(s)).strip().lower()
 
-
-def _ensure_csv_header(path: str, header: list[str]) -> None:
-    if os.path.exists(path):
-        return
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(header)
-
-
 class Lemmatizer:
     def __init__(
         self,
