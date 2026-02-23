@@ -1,7 +1,8 @@
 from lemmatizer import Lemmatizer
 from lemma_salience import LemmaSalienceRanker, load_known_lemmas_csv
 from greek_adaptive_rewriter import GreekAdaptiveRewriter
-from openai_llm_client import OpenAILLMClient
+# from openai_llm_client import OpenAILLMClient
+from corning_llm_client import CorningLLMClient
 
 print("boot")
 
@@ -20,7 +21,8 @@ ranker = LemmaSalienceRanker(lemmatizer)
 print("ranker ready")
 
 # --- LLM backend ---
-llm = OpenAILLMClient()  # optionally: OpenAILLMClient(model="gpt-4.1-mini")
+# llm = OpenAILLMClient()  # optionally: OpenAILLMClient(model="gpt-4.1-mini")
+llm = CorningLLMClient()
 print("llm client ready:", getattr(llm, "model", "<unknown>"))
 
 # --- rewriter ---
