@@ -34,6 +34,8 @@ class Lemmatizer:
         agree_min_count: int = 3,
         agree_counts_path: str = "agree_counts.csv",
         needs_review_path: str = "needs_review_instances.csv",
+        stanza_model_dir: str | None = None,
+        stanza_download_method=None,
     ):
         self.use_lexicon = use_lexicon
         self.skip_propn = skip_propn
@@ -82,6 +84,8 @@ class Lemmatizer:
             tokenize_no_ssplit=False,
             use_gpu=False,
             verbose=False,
+            model_dir=stanza_model_dir,              # NEW
+            download_method=stanza_download_method,  # NEW
         )
         self.udpipe_model = UDPipeModel.load(udpipe_model_path)
         if self.udpipe_model is None:
