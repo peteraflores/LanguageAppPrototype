@@ -16,3 +16,6 @@ stanza_resources/el/mwt/gdt.pt
 stanza_resources/el/pos/gdt_nocharlm.pt
 stanza_resources/el/pretrain/conll17.pt
 stanza_resources/el/tokenize/gdt.pt
+example_run.txt
+needs_review_instances.csv
+needs_review_instances.csv
