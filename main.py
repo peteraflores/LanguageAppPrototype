@@ -1,8 +1,14 @@
 from lemmatizer import Lemmatizer
-from lemma_salience import LemmaSalienceRanker, load_known_lemmas_csv
+from lemma_salience import LemmaSalienceRanker, load_known_lemmas_csv, load_lemma_frequency_csv
 from greek_adaptive_rewriter import GreekAdaptiveRewriter
 # from openai_llm_client import OpenAILLMClient
 from corning_llm_client import CorningLLMClient
+import os
+import sys
+import io
+
+# Set UTF-8 encoding for Windows console
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 print("boot")
 
@@ -14,13 +20,34 @@ lemmatizer = Lemmatizer(
     stanza_model_dir=r"stanza_resources",
     stanza_download_method=None,  # enforce offline/no-download behavior
 )
-print("lemmatizer ready")
+print("lemmatizer ready") 
 
 known = load_known_lemmas_csv("known_lemmas.csv")
 print("known lemmas loaded:", len(known))
 
-ranker = LemmaSalienceRanker(lemmatizer)
-print("ranker ready")
+# Load frequency data if available
+frequency_map = {}
+frequency_file = "lemma_frequency.csv"
+if os.path.exists(frequency_file):
+    frequency_map = load_lemma_frequency_csv(frequency_file)
+    print(f"frequency data loaded: {len(frequency_map)} lemmas")
+    
+    # Get top N frequent lemmas for threshold check
+    # Sort by frequency and take top N
+    sorted_lemmas = sorted(frequency_map.items(), key=lambda x: x[1], reverse=True)
+    top_n = 500  # Match the config default
+    top_frequent_lemmas = [lemma for lemma, freq in sorted_lemmas[:top_n]]
+else:
+    print(f"Warning: {frequency_file} not found. Frequency-based ranking will not be used.")
+    top_frequent_lemmas = []
+
+# Pass frequency map to ranker
+ranker = LemmaSalienceRanker(
+    lemmatizer,
+    frequency_map=frequency_map,
+    w_frequency=10.0  # Make frequency the dominant factor
+)
+print("ranker ready with frequency data")
 
 # --- LLM backend ---
 # llm = OpenAILLMClient()  # optionally: OpenAILLMClient(model="gpt-4.1-mini")
@@ -28,7 +55,12 @@ llm = CorningLLMClient()
 print("llm client ready:", getattr(llm, "model", "<unknown>"))
 
 # --- rewriter ---
-rewriter = GreekAdaptiveRewriter(llm=llm, ranker=ranker, lemmatizer=lemmatizer)
+rewriter = GreekAdaptiveRewriter(
+    llm=llm, 
+    ranker=ranker, 
+    lemmatizer=lemmatizer,
+    top_frequent_lemmas=top_frequent_lemmas  # Pass top frequent lemmas for threshold check
+)
 print("rewriter ready")
 
 # --- test passage ---
