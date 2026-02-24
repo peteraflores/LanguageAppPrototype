@@ -79,7 +79,7 @@ for r in result.rounds:
     print(
         f"round={r.round_index} mode={r.mode} cov={r.coverage:.3f} "
         f"lemma_viol={len(r.violations_lemmas)} surf_viol={len(r.violations_surface)} "
-        f"banned_lemmas={len(r.banned_lemmas)} banned_surface={len(r.banned_surface)}"
+        f"banned_lemmas={r.banned_lemmas_size} banned_surface={r.banned_surface_size}"
     )
     if r.violations_lemmas:
         print("  lemma viol sample:", r.violations_lemmas[:12])

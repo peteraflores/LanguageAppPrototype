@@ -1,8 +1,8 @@
+# corning_llm_client.py - Updated with better error handling
 import os
 import time
 import random
-from openai import OpenAI, RateLimitError, APIError, APITimeoutError, APIConnectionError
-
+from openai import OpenAI, RateLimitError, APIError, APITimeoutError, APIConnectionError, PermissionDeniedError
 from greek_adaptive_rewriter import LLMClient
 
 class CorningLLMClient(LLMClient):
@@ -23,9 +23,24 @@ class CorningLLMClient(LLMClient):
         
         # Default to Claude Sonnet 4.5 as recommended in the docs
         # You can override this with the exact model name from Open WebUI
-        self.model = model or os.environ.get("CORNING_MODEL", "claude-3-5-sonnet-20241022")
+        self.model = model or os.environ.get("CORNING_MODEL", "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
         self._last_call_ts = 0.0
         self._min_interval_s = float(os.environ.get("CORNING_MIN_INTERVAL_S", "3.0"))
+        
+        # Test the connection on initialization
+        self._test_connection()
+    
+    def _test_connection(self):
+        """Test if we can list models to verify API key and access"""
+        try:
+            models = self.client.models.list()
+            available_models = [m.id for m in models]
+            print(f"[corning-llm] Available models: {available_models}")
+            if self.model not in available_models:
+                print(f"[corning-llm] WARNING: Requested model '{self.model}' not in available models")
+        except Exception as e:
+            print(f"[corning-llm] Failed to list models: {type(e).__name__}: {e}")
+            # Don't fail here, just warn
     
     def generate(self, *, system: str, user: str, temperature: float = 0.2) -> str:
         max_retries = 8
@@ -63,6 +78,24 @@ class CorningLLMClient(LLMClient):
                 print(f"[corning-llm] ok, chars={len(text)}")
                 return text
                 
+            except PermissionDeniedError as e:
+                # Permission errors are not retryable
+                error_msg = str(e)
+                print(f"[corning-llm] Permission denied: {error_msg}")
+                
+                # Try to extract more details
+                if hasattr(e, 'response') and hasattr(e.response, 'json'):
+                    try:
+                        error_details = e.response.json()
+                        print(f"[corning-llm] Error details: {error_details}")
+                    except:
+                        pass
+                
+                raise RuntimeError(
+                    f"Permission denied accessing Corning LLM API. "
+                    f"Check your API key and model access. Error: {error_msg}"
+                ) from e
+                
             except RateLimitError as e:
                 msg = str(e)
                 print(f"[corning-llm] 429 details: {msg}")
@@ -97,6 +130,12 @@ class CorningLLMClient(LLMClient):
                 time.sleep(sleep_s)
                 
             except APIError as e:
+                # Don't retry permission errors
+                if "permission" in str(e).lower() or "forbidden" in str(e).lower():
+                    raise RuntimeError(
+                        f"Permission error accessing Corning LLM API: {e}"
+                    ) from e
+                    
                 sleep_s = min(cap, 1.5 + random.random() * 2.0)
                 print(f"[corning-llm] api error ({type(e).__name__}), sleeping {sleep_s:.1f}s")
                 time.sleep(sleep_s)
