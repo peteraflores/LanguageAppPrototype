@@ -4,10 +4,7 @@ agree_counts.csv
 needs_review_instances.csv
 surface_lexicon.csv
 https://github.com/peteraflores/LanguageAppPrototype-models.git
-__pycache__/corning_llm_client.cpython-311.pyc
-__pycache__/greek_adaptive_rewriter.cpython-311.pyc
-__pycache__/lemma_salience.cpython-311.pyc
-__pycache__/lemmatizer.cpython-311.pyc
+__pycache__/*
 stanza_resources/resources.json
 stanza_resources/el/default.zip
 stanza_resources/el/depparse/gdt_nocharlm.pt
@@ -17,5 +14,4 @@ stanza_resources/el/pos/gdt_nocharlm.pt
 stanza_resources/el/pretrain/conll17.pt
 stanza_resources/el/tokenize/gdt.pt
 example_run.txt
-needs_review_instances.csv
 needs_review_instances.csv

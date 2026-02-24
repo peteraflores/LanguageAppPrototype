@@ -7,6 +7,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 import csv
 import os
 import unicodedata
+import math
 
 FREE_UPOS: Set[str] = {"DET", "ADP", "CCONJ", "SCONJ", "PART", "PRON", "AUX"}
 
@@ -108,6 +109,31 @@ def load_known_lemma_map_csv(path: str) -> Dict[str, str]:
 
     return out
 
+
+def load_lemma_frequency_csv(path: str) -> Dict[str, int]:
+    """
+    Load lemma_frequency.csv with columns: lemma, frequency, rank
+    Returns dict mapping normalized lemma -> frequency count
+    """
+    frequency_map: Dict[str, int] = {}
+    if not path or not os.path.exists(path):
+        return frequency_map
+    
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            lemma = _norm_lemma(row.get("lemma", ""))
+            if not lemma:
+                continue
+            try:
+                freq = int(row.get("frequency", 0))
+                frequency_map[lemma] = freq
+            except ValueError:
+                continue
+    
+    return frequency_map
+
+
 @dataclass(frozen=True)
 class LemmaStats:
     lemma: str
@@ -133,8 +159,9 @@ class PassageAnalysis:
 class LemmaSalienceRanker:
     """
     Ranks lemmas by "importance/salience" within a passage based on:
+      - SUBTLEX frequency (if provided)
       - dispersion across sentences
-      - frequency
+      - frequency in passage
       - POS bonus (content words)
       - early appearance bonus
 
@@ -147,14 +174,18 @@ class LemmaSalienceRanker:
         *,
         w_sentence_count: float = 3.0,
         w_token_count: float = 1.0,
+        w_frequency: float = 10.0,  # Weight for SUBTLEX frequency
         early_bonus_s0: float = 1.0,
         early_bonus_s1: float = 1.0,
+        frequency_map: Optional[Dict[str, int]] = None,
     ):
         self.lemmatizer = lemmatizer
         self.w_sentence_count = w_sentence_count
         self.w_token_count = w_token_count
+        self.w_frequency = w_frequency
         self.early_bonus_s0 = early_bonus_s0
         self.early_bonus_s1 = early_bonus_s1
+        self.frequency_map = frequency_map or {}
 
     def analyze(
         self,
@@ -227,8 +258,16 @@ class LemmaSalienceRanker:
             first_sentence = int(d["first_sentence"] if d["first_sentence"] is not None else 0)
             upos = (d["upos"] or "").upper()
 
+            # Get SUBTLEX frequency if available
+            subtlex_freq = self.frequency_map.get(lemma, 0)
+            
+            # Use raw frequency directly for continuous scoring
+            # Normalize by dividing by 1000 to keep scores in reasonable range
+            frequency_score = subtlex_freq / 1000.0
+            
             score = (
-                self.w_sentence_count * sentence_count
+                self.w_frequency * frequency_score
+                + self.w_sentence_count * sentence_count
                 + self.w_token_count * token_count
                 + self._pos_bonus(upos)
                 + self._early_bonus(first_sentence)

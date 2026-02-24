@@ -20,6 +20,7 @@ import re
 import unicodedata
 from typing import Protocol, runtime_checkable, Dict
 from lemma_salience import LemmaSalienceRanker, LemmaStats, FREE_UPOS
+import rewrite_prompts  # NEW: Import our prompting module
 
 
 @runtime_checkable
@@ -83,6 +84,8 @@ class RewriteMode(str, Enum):
     SURGICAL = "surgical"
     SIMPLIFY_THEN_ENFORCE = "simplify_then_enforce"
     RETELL = "retell"
+    NOOB = "noob"  # NEW: aggressive simplification for beginners
+    ULTRA_NOOB = "ultra_noob"  # NEW: extreme simplification
 
 @dataclass
 class IterationPolicy:
@@ -103,6 +106,13 @@ class RewriteConfig:
     iteration: IterationPolicy = field(default_factory=IterationPolicy)
     # When we escalate to retell, how long should it be?
     retell_target_sentences: int = 6
+    # For ultra_noob mode, how many sentences in the summary?
+    ultra_noob_target_sentences: int = 3
+    # Track violations for auto-expansion
+    violation_threshold: int = 2  # Add to keep-set after this many violations
+    # Minimum vocabulary threshold
+    min_vocab_threshold: float = 0.3  # Must know 30% of top N frequent lemmas
+    top_n_frequent: int = 500  # Check against top 500 most frequent lemmas
 
 
 # -----------------------------
@@ -135,102 +145,6 @@ class RewriteResult:
 
 
 # -----------------------------
-# Prompt templates
-# -----------------------------
-
-_SYSTEM_COMMON = (
-    "You rewrite Modern Greek text.\n"
-    "Rules:\n"
-    "1) Preserve meaning, facts, and named entities.\n"
-    "2) Obey allowed/banned lemma constraints strictly.\n"
-    "3) Output ONLY the rewritten Greek passage. No commentary.\n"
-)
-
-def _prompt_surgical(
-    passage: str,
-    target_coverage: float,
-    keep_lemmas: Sequence[str],
-    banned_lemmas: Sequence[str],
-    banned_surface: Sequence[str],
-) -> Tuple[str, str]:
-    system = _SYSTEM_COMMON + (
-        "Prefer minimal edits. Keep sentence count the same unless absolutely necessary.\n"
-        "Do not delete key ideas.\n"
-    )
-    user = (
-        "Input passage (Greek):\n"
-        f"{passage}\n\n"
-        f"Target: lemma-coverage ≥ {target_coverage:.3f} relative to the provided known-lemma set.\n"
-        "You may introduce new lemmas ONLY from the keep-set below; all other unknown lemmas must be avoided.\n\n"
-        "Keep-set (allowed unknown lemmas):\n"
-        + "\n".join(f"- {l}" for l in keep_lemmas) + "\n\n"
-        "Banned lemmas (must not appear in any inflected form):\n"
-        + "\n".join(f"- {l}" for l in banned_lemmas) + "\n\n"
-        "Banned surface forms (must not appear verbatim):\n"
-        + "\n".join(f"- {s}" for s in banned_surface) + "\n\n"
-        "Extra constraints:\n"
-        "1) Keep sentence count the same unless absolutely necessary.\n"
-        "2) Preserve tense/aspect and key relations.\n"
-        "3) Keep register natural, modern.\n\n"
-        "Return: rewritten passage only.\n"
-    )
-    return system, user
-
-def _prompt_simplify_then_enforce(
-    passage: str,
-    keep_lemmas: Sequence[str],
-    banned_lemmas: Sequence[str],
-    banned_surface: Sequence[str],
-) -> Tuple[str, str]:
-    system = _SYSTEM_COMMON + (
-        "You may paraphrase more broadly, but must preserve all facts.\n"
-        "Prefer shorter clauses and common vocabulary.\n"
-    )
-    user = (
-        "Task: two-stage rewrite in one output.\n\n"
-        "Stage 1 (simplify): Rewrite the passage into simpler Modern Greek while preserving all facts and meaning.\n"
-        "Prefer shorter clauses, common vocabulary, and explicit subject-verb-object structure.\n"
-        "Do NOT remove important details.\n\n"
-        "Stage 2 (enforce constraints): Adjust the simplified passage so it obeys the keep/bans below.\n\n"
-        "Input passage:\n"
-        f"{passage}\n\n"
-        "Keep-set allowed unknown lemmas:\n"
-        + "\n".join(f"- {l}" for l in keep_lemmas) + "\n\n"
-        "Banned lemmas:\n"
-        + "\n".join(f"- {l}" for l in banned_lemmas) + "\n\n"
-        "Banned surface forms:\n"
-        + "\n".join(f"- {s}" for s in banned_surface) + "\n\n"
-        "Hard constraints: no banned lemma may appear in any inflected form. Output only the final enforced passage.\n"
-    )
-    return system, user
-
-def _prompt_retell(
-    passage: str,
-    keep_lemmas: Sequence[str],
-    banned_lemmas: Sequence[str],
-    banned_surface: Sequence[str],
-    target_sentences: int,
-) -> Tuple[str, str]:
-    system = _SYSTEM_COMMON + (
-        "You may compress and reorder for clarity, but must keep key facts and causal relations.\n"
-    )
-    user = (
-        f"Write a short, faithful retelling in Modern Greek in about {target_sentences} sentences.\n"
-        "Keep the key facts and causal relations, but you may shorten and reorder for clarity.\n\n"
-        "Input passage:\n"
-        f"{passage}\n\n"
-        "Keep-set allowed unknown lemmas:\n"
-        + "\n".join(f"- {l}" for l in keep_lemmas) + "\n\n"
-        "Banned lemmas:\n"
-        + "\n".join(f"- {l}" for l in banned_lemmas) + "\n\n"
-        "Banned surface forms:\n"
-        + "\n".join(f"- {s}" for s in banned_surface) + "\n\n"
-        "Hard constraints: do not use any banned lemma in any form. Output only the retelling.\n"
-    )
-    return system, user
-
-
-# -----------------------------
 # Orchestrator
 # -----------------------------
 
@@ -242,18 +156,23 @@ class GreekAdaptiveRewriter:
         ranker: LemmaSalienceRanker,
         config: Optional[RewriteConfig] = None,
         lemmatizer: Optional[LemmatizerLike] = None,  # NEW
+        top_frequent_lemmas: Optional[List[str]] = None,  # Top N frequent lemmas for threshold check
     ):
         self.llm = llm
         self.ranker = ranker
         self.cfg = config or RewriteConfig()
         self.lemmatizer = lemmatizer
-        self._ban_tick = 0  # monotonically increasing “recency” counter
+        self.top_frequent_lemmas = top_frequent_lemmas or []
+        self._ban_tick = 0  # monotonically increasing "recency" counter
 
         self._ban_lemma_score: Dict[str, int] = {}
         self._ban_lemma_last: Dict[str, int] = {}
 
         self._ban_surface_score: Dict[str, int] = {}
         self._ban_surface_last: Dict[str, int] = {}
+        
+        # Track violation history for automatic keep-set expansion
+        self._violation_history: Dict[str, int] = {}
 
     # ---- public API ----
 
@@ -271,6 +190,30 @@ class GreekAdaptiveRewriter:
         Adapt passage to target coverage using iterative lemma/surface enforcement.
         """
         target = float(target_coverage if target_coverage is not None else self.cfg.target_coverage)
+        
+        # Check minimum vocabulary threshold
+        if self.top_frequent_lemmas and len(self.top_frequent_lemmas) > 0:
+            known_frequent = len([lemma for lemma in self.top_frequent_lemmas if lemma in known_lemmas])
+            frequent_coverage = known_frequent / len(self.top_frequent_lemmas)
+            
+            if frequent_coverage < self.cfg.min_vocab_threshold:
+                # Return early with error message
+                missing_essentials = [lemma for lemma in self.top_frequent_lemmas[:50] if lemma not in known_lemmas]  # Show top 50 missing
+                error_msg = (
+                    f"Insufficient vocabulary foundation. You know only {frequent_coverage:.1%} of the {len(self.top_frequent_lemmas)} "
+                    f"most frequent Greek lemmas (minimum required: {self.cfg.min_vocab_threshold:.0%}). "
+                    f"Focus on learning these essential words first: {', '.join(missing_essentials[:20])}..."
+                )
+                return RewriteResult(
+                    final_text=error_msg,
+                    final_coverage=0.0,
+                    initial_coverage=0.0,
+                    mode_used=RewriteMode.ULTRA_NOOB,
+                    rounds=[],
+                    keep_lemmas=[],
+                    banned_lemmas=[],
+                    banned_surface_forms=[],
+                )
 
         # initial analysis
         init_analysis = self.ranker.analyze(passage, known_lemmas=known_lemmas)
@@ -279,7 +222,7 @@ class GreekAdaptiveRewriter:
         chosen_mode = mode or self._choose_mode(init_cov)
 
         unknown_ranked = self.ranker.filter_known(init_analysis, known_lemmas)
-        keep_stats = self._choose_keep_set(init_analysis, unknown_ranked, known_lemmas, target)
+        keep_stats = self._choose_keep_set(init_analysis, unknown_ranked, known_lemmas, target, mode=chosen_mode)
         keep_lemmas = [s.lemma for s in keep_stats]
 
         banned_lemmas, banned_surface = self._initial_bans(init_analysis, known_lemmas, keep_lemmas)
@@ -372,6 +315,18 @@ class GreekAdaptiveRewriter:
             else:
                 stagnation = 0
 
+            # Track violations for auto-expansion
+            for lemma in violations_lemmas:
+                if lemma not in keep_lemmas:
+                    self._violation_history[lemma] = self._violation_history.get(lemma, 0) + 1
+                    
+                    # Auto-add to keep-set if violated too many times
+                    if self._violation_history[lemma] >= self.cfg.violation_threshold:
+                        print(f"[adapt] Auto-adding {lemma} to keep-set after {self._violation_history[lemma]} violations")
+                        keep_lemmas.append(lemma)
+                        # Reset violation count
+                        self._violation_history[lemma] = 0
+            
             # expand bans using violations from THIS output
             banned_lemmas, banned_surface = self._expand_bans(
                 analysis=analysis,
@@ -383,9 +338,29 @@ class GreekAdaptiveRewriter:
                 violations_lemmas=violations_lemmas,
                 violations_surface=violations_surface,
             )
+            
+            # No need to filter basic vocabulary anymore
 
-            # auto escalate mode on stagnation
-            if self.cfg.iteration.auto_escalate and stagnation >= self.cfg.iteration.stagnation_rounds:
+            # Immediate escalation for big coverage gaps
+            coverage_gap = target - cov
+            should_escalate_now = False
+            
+            if current_mode in [RewriteMode.NOOB, RewriteMode.ULTRA_NOOB]:
+                # For noob modes, escalate after just 1 round of stagnation
+                if stagnation >= 1:
+                    should_escalate_now = True
+                # Or if NOOB achieves less than 80% coverage
+                elif current_mode == RewriteMode.NOOB and cov < 0.80:
+                    should_escalate_now = True
+            else:
+                # For other modes, check if gap is > 30%
+                if coverage_gap > 0.30 and current_mode != RewriteMode.ULTRA_NOOB:
+                    should_escalate_now = True
+                # Or use normal stagnation logic
+                elif self.cfg.iteration.auto_escalate and stagnation >= self.cfg.iteration.stagnation_rounds:
+                    should_escalate_now = True
+
+            if should_escalate_now:
                 current_mode = self._escalate_mode(current_mode)
                 stagnation = 0
 
@@ -447,16 +422,33 @@ class GreekAdaptiveRewriter:
     def _choose_mode(self, coverage: float) -> RewriteMode:
         if coverage >= 0.88:
             return RewriteMode.SURGICAL
-        if coverage >= 0.70:
+        elif coverage >= 0.70:
             return RewriteMode.SIMPLIFY_THEN_ENFORCE
-        return RewriteMode.RETELL
+        elif coverage >= 0.50:
+            return RewriteMode.RETELL
+        elif coverage >= 0.30:  # Changed back to 0.30
+            return RewriteMode.NOOB
+        else:
+            # Start with ULTRA_NOOB if coverage < 30%
+            return RewriteMode.ULTRA_NOOB
 
     def _escalate_mode(self, mode: RewriteMode) -> RewriteMode:
-        if mode == RewriteMode.SURGICAL:
-            return RewriteMode.SIMPLIFY_THEN_ENFORCE
-        if mode == RewriteMode.SIMPLIFY_THEN_ENFORCE:
-            return RewriteMode.RETELL
-        return RewriteMode.RETELL
+        escalation_path = [
+            RewriteMode.SURGICAL,
+            RewriteMode.SIMPLIFY_THEN_ENFORCE,
+            RewriteMode.RETELL,
+            RewriteMode.NOOB,
+            RewriteMode.ULTRA_NOOB,
+        ]
+        
+        try:
+            current_idx = escalation_path.index(mode)
+            if current_idx < len(escalation_path) - 1:
+                return escalation_path[current_idx + 1]
+        except ValueError:
+            pass
+        
+        return RewriteMode.ULTRA_NOOB
 
     def _choose_keep_set(
         self,
@@ -464,24 +456,31 @@ class GreekAdaptiveRewriter:
         unknown_ranked: List[LemmaStats],
         known_lemmas: Set[str],
         target: float,
+        mode: Optional[RewriteMode] = None,
     ) -> List[LemmaStats]:
-        # K policy: scale with length + gap
-        T = int(getattr(analysis, "total_tokens", 0) or 0)
-        c = float(getattr(analysis, "coverage", 1.0) or 1.0)
-        gap = max(0.0, target - c)
+        # For noob modes, use adjusted keep-sets
+        if mode == RewriteMode.ULTRA_NOOB:
+            k = 5  # Increased from 2 to 5-6 new lemmas for ultra-noob
+        elif mode == RewriteMode.NOOB:
+            k = 6  # Increased from 4 to 6 new lemmas for noob
+        else:
+            # Original K policy: scale with length + gap
+            T = int(getattr(analysis, "total_tokens", 0) or 0)
+            c = float(getattr(analysis, "coverage", 1.0) or 1.0)
+            gap = max(0.0, target - c)
 
-        k_base = int(round(T / 35.0)) if T else 3
-        k_base = max(3, min(12, k_base))
+            k_base = int(round(T / 35.0)) if T else 3
+            k_base = max(3, min(12, k_base))
 
-        k = k_base
-        if gap >= 0.20:
-            k += 6
-        elif gap >= 0.10:
-            k += 3
-        elif gap < 0.05:
-            k -= 1
+            k = k_base
+            if gap >= 0.20:
+                k += 6
+            elif gap >= 0.10:
+                k += 3
+            elif gap < 0.05:
+                k -= 1
 
-        k = max(2, min(18, k))  # allow a bit more headroom
+            k = max(2, min(18, k))  # allow a bit more headroom
 
         keep = self.ranker.choose_keep_set(unknown_ranked, k=k, prefer_pos=self.cfg.prefer_pos)
         return keep
@@ -638,10 +637,18 @@ class GreekAdaptiveRewriter:
         banned_surface_list = self._top_banned_surface(banned_surface, cap=500)
 
         if mode == RewriteMode.SURGICAL:
-            return _prompt_surgical(passage, target, keep_lemmas, banned_lemmas_list, banned_surface_list)
-        if mode == RewriteMode.SIMPLIFY_THEN_ENFORCE:
-            return _prompt_simplify_then_enforce(passage, keep_lemmas, banned_lemmas_list, banned_surface_list)
-        return _prompt_retell(passage, keep_lemmas, banned_lemmas_list, banned_surface_list, target_sentences=self.cfg.retell_target_sentences)
+            return rewrite_prompts.prompt_surgical(passage, target, keep_lemmas, banned_lemmas_list, banned_surface_list)
+        elif mode == RewriteMode.SIMPLIFY_THEN_ENFORCE:
+            return rewrite_prompts.prompt_simplify_then_enforce(passage, keep_lemmas, banned_lemmas_list, banned_surface_list)
+        elif mode == RewriteMode.RETELL:
+            return rewrite_prompts.prompt_retell(passage, keep_lemmas, banned_lemmas_list, banned_surface_list, target_sentences=self.cfg.retell_target_sentences)
+        elif mode == RewriteMode.NOOB:
+            return rewrite_prompts.prompt_noob(passage, target, keep_lemmas, banned_lemmas_list, banned_surface_list)
+        elif mode == RewriteMode.ULTRA_NOOB:
+            return rewrite_prompts.prompt_ultra_noob(passage, keep_lemmas, banned_lemmas_list, banned_surface_list, target_sentences=self.cfg.ultra_noob_target_sentences)
+        else:
+            # Fallback to retell mode
+            return rewrite_prompts.prompt_retell(passage, keep_lemmas, banned_lemmas_list, banned_surface_list, target_sentences=self.cfg.retell_target_sentences)
 
     def _surface_tokens_norm(self, text: str) -> List[str]:
             # Prefer the lemmatizer’s token stream (robust to punctuation/tokenization quirks)
