@@ -14,6 +14,7 @@ _SYSTEM_COMMON = (
 "Preserve meaning and named entities.\n"
 "Strictly obey vocabulary constraints.\n"
 "Output ONLY the rewritten Greek passage.\n"
+"Before outputting, scan your output and ensure none of the forbidden lemmas/surface forms appear.\n"
 )
 
 def prompt_surgical(
