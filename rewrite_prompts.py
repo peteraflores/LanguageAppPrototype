@@ -6,8 +6,6 @@ Includes standard modes (surgical, simplify, retell) and new beginner modes (noo
 """
 
 from typing import Sequence, Tuple
-
-
 # Base system prompt used across all modes
 _SYSTEM_COMMON = (
 "You rewrite Modern Greek text.\n"
@@ -20,8 +18,6 @@ _SYSTEM_COMMON = (
 def prompt_surgical(
     passage: str,
     target: float,
-    essential_lemmas: Sequence[str],
-    banned_lemmas: Sequence[str],
     banned_surface: Sequence[str],
 ) -> Tuple[str, str]:
     """Minimal edits mode - for high initial coverage"""
@@ -30,10 +26,6 @@ def prompt_surgical(
         "Input passage:\n"
         f"{passage}\n"
         f"Target: ≥ {target:.3f} lemma coverage.\n"
-"Allowed new lemmas:\nYou may introduce new vocabulary ONLY from this list. Do not introduce any other new base words\n"
-        "\n".join(f"- {l}" for l in essential_lemmas) + "\n"
-        "Forbidden lemmas (no inflected forms allowed):\n"
-        "\n".join(f"- {l}" for l in banned_lemmas) + "\n"
         "Forbidden surface forms:\n"
         "\n".join(f"- {s}" for s in banned_surface) + "\n"
         "Keep length similar to input.\n"
@@ -45,8 +37,6 @@ def prompt_surgical(
 def prompt_simplify_then_enforce(
     passage: str,
     target: float,
-    essential_lemmas: Sequence[str],
-    banned_lemmas: Sequence[str],
     banned_surface: Sequence[str],
 ) -> Tuple[str, str]:
     """Two-stage simplification - for medium coverage (70-88%)"""
@@ -58,10 +48,6 @@ def prompt_simplify_then_enforce(
         "Input passage:\n"
         f"{passage}\n"
         f"Target: ≥ {target:.3f} lemma coverage.\n"
-        "Allowed new lemmas:\nYou may introduce new vocabulary ONLY from this list. Do not introduce any other new base words\n"
-        "\n".join(f"- {l}" for l in essential_lemmas) + "\n"
-        "Forbidden lemmas (no inflected forms allowed):\n"
-        "\n".join(f"- {l}" for l in banned_lemmas) + "\n"
         "Forbidden surface forms:\n"
         "\n".join(f"- {s}" for s in banned_surface) + "\n"
         "Keep length similar to input.\n"
@@ -74,8 +60,6 @@ def prompt_simplify_then_enforce(
 def prompt_retell(
     passage: str,
     target: float,
-    essential_lemmas: Sequence[str],
-    banned_lemmas: Sequence[str],
     banned_surface: Sequence[str],
 ) -> Tuple[str, str]:
     """Retelling mode - for lower coverage (50-70%)"""
@@ -87,10 +71,6 @@ def prompt_retell(
         "Input passage:\n"
         f"{passage}\n"
         f"Target: ≥ {target:.3f} lemma coverage.\n"
-        "Allowed new lemmas:\nYou may introduce new vocabulary ONLY from this list. Do not introduce any other new base words\n"
-        "\n".join(f"- {l}" for l in essential_lemmas) + "\n"
-        "Forbidden lemmas (no inflected forms allowed):\n"
-        "\n".join(f"- {l}" for l in banned_lemmas) + "\n"
         "Forbidden surface forms:\n"
         "\n".join(f"- {s}" for s in banned_surface) + "\n"
         "Keep length similar to input.\n"
@@ -102,8 +82,6 @@ def prompt_retell(
 def prompt_noob(
     passage: str,
     target: float,
-    essential_lemmas: Sequence[str],
-    banned_lemmas: Sequence[str],
     banned_surface: Sequence[str],
 ) -> Tuple[str, str]:
     """
@@ -125,10 +103,6 @@ def prompt_noob(
         "Input passage:\n"
         f"{passage}\n"
         f"Target: ≥ {target:.3f} lemma coverage.\n"
-        "Allowed new lemmas:\nYou may introduce new vocabulary ONLY from this list. Do not introduce any other new base words\n"
-        "\n".join(f"- {l}" for l in essential_lemmas) + "\n"
-        "Forbidden lemmas (no inflected forms allowed):\n"
-        "\n".join(f"- {l}" for l in banned_lemmas) + "\n"
         "Forbidden surface forms:\n"
         "\n".join(f"- {s}" for s in banned_surface) + "\n"
         "Keep length similar to input.\n"
@@ -140,8 +114,6 @@ def prompt_noob(
 def prompt_ultra_noob(
     passage: str,
     target: float,
-    essential_lemmas: Sequence[str],
-    banned_lemmas: Sequence[str],
     banned_surface: Sequence[str],
 ) -> Tuple[str, str]:
     """
@@ -162,10 +134,6 @@ def prompt_ultra_noob(
         "Input passage:\n"
         f"{passage}\n"
         f"Target: ≥ {target:.3f} lemma coverage.\n"
-        "Allowed new lemmas:\nYou may introduce new vocabulary ONLY from this list. Do not introduce any other new base words\n"
-        "\n".join(f"- {l}" for l in essential_lemmas) + "\n"
-        "Forbidden lemmas (no inflected forms allowed):\n"
-        "\n".join(f"- {l}" for l in banned_lemmas) + "\n"
         "Forbidden surface forms:\n"
         "\n".join(f"- {s}" for s in banned_surface) + "\n"
         "Keep length similar to input.\n"
