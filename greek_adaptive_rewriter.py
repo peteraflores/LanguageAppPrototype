@@ -143,8 +143,8 @@ class RoundSnapshot:
 @dataclass
 class RewriteResult:
     final_text: str
-    final_coverage: float
-    initial_coverage: float
+    final_effective_coverage: float
+    initial_base_coverage: float
     mode_used: RewriteMode
     rounds: List[RoundSnapshot]
     essential_lemmas: List[str]
@@ -219,8 +219,8 @@ class GreekAdaptiveRewriter:
                 )
                 return RewriteResult(
                     final_text=error_msg,
-                    final_coverage=0.0,
-                    initial_coverage=0.0,
+                    final_effective_coverage=0.0,
+                    initial_base_coverage=0.0,
                     mode_used=RewriteMode.ULTRA_NOOB,
                     rounds=[],
                     essential_lemmas=[],
@@ -279,8 +279,6 @@ class GreekAdaptiveRewriter:
             if not out:
                 # If backend returns empty, treat as failure: keep current text and break.
                 break
-
-            print(f"[adapt] LLM returned {len(out)} chars")
 
             known_plus = set(known_lemmas) | set(essential_lemmas)
             analysis_eff = self.ranker.analyze(out, known_lemmas=known_plus)
@@ -477,8 +475,8 @@ class GreekAdaptiveRewriter:
 
         return RewriteResult(
             final_text=final_text,
-            final_coverage=final_cov,
-            initial_coverage=init_cov,
+            final_effective_coverage=final_cov,
+            initial_base_coverage=init_cov,
             mode_used=final_mode,
             rounds=rounds,
             essential_lemmas=list(essential_lemmas),
