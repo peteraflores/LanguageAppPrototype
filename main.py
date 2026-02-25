@@ -113,9 +113,43 @@ for r in result.rounds:
         f"lemma_viol={len(r.violations_lemmas)} surf_viol={len(r.violations_surface)} "
         f"banned_lemmas={r.banned_lemmas_size} banned_surface={r.banned_surface_size}"
     )
+    print(f"  essential_lemmas ({len(r.essential_lemmas)}): {r.essential_lemmas}")
     if r.violations_lemmas:
         print("  lemma viol sample:", r.violations_lemmas[:12])
     if r.violations_surface:
         print("  surface viol sample:", r.violations_surface[:12])
 
-print("done")
+print("\n--- FINAL STATE ---")
+print(f"Final keep-set ({len(result.essential_lemmas)}): {result.essential_lemmas}")
+print(f"Final banned lemmas ({len(result.banned_lemmas)}): {result.banned_lemmas[:20]}...")
+print(f"Final banned surface ({len(result.banned_surface_forms)}): {result.banned_surface_forms[:20]}...")
+
+# Show which lemmas contribute to coverage
+if result.final_text != passage:  # Only if text was rewritten
+    final_analysis = ranker.analyze(result.final_text, known_lemmas=known)
+    print(f"\n--- FINAL TEXT ANALYSIS ---")
+    print(f"Total tokens: {final_analysis.total_tokens}")
+    print(f"Coverage: {final_analysis.coverage:.3f}")
+    
+    # Show lemmas contributing to coverage
+    contributing_lemmas = []
+    for stat in final_analysis.ranked:
+        if stat.lemma in known or stat.lemma in result.essential_lemmas:
+            contributing_lemmas.append((stat.lemma, stat.token_count, 'known' if stat.lemma in known else 'keep'))
+    
+    print(f"\nLemmas contributing to coverage (top 20):")
+    for lemma, count, source in sorted(contributing_lemmas, key=lambda x: x[1], reverse=True)[:20]:
+        print(f"  {lemma}: {count} tokens ({source})")
+    
+    # Show unknown lemmas that don't contribute
+    unknown_present = []
+    for stat in final_analysis.ranked:
+        if stat.lemma not in known and stat.lemma not in result.essential_lemmas:
+            unknown_present.append((stat.lemma, stat.token_count))
+    
+    if unknown_present:
+        print(f"\nUnknown lemmas NOT contributing to coverage:")
+        for lemma, count in sorted(unknown_present, key=lambda x: x[1], reverse=True):
+            print(f"  {lemma}: {count} tokens")
+
+print("\ndone")
