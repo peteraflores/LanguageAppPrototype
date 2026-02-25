@@ -49,14 +49,9 @@ class CorningLLMClient(LLMClient):
             now = time.time()
             wait = self._min_interval_s - (now - self._last_call_ts)
             if wait > 0:
-                print(f"[corning-llm] throttling: sleep {wait:.1f}s")
                 time.sleep(wait)
             
             try:
-                print(
-                    f"[corning-llm] attempt {attempt}/{max_retries} "
-                    f"model={self.model} temp={temperature} sys={len(system)} user={len(user)}"
-                )
                 # record just before the call
                 self._last_call_ts = time.time()
                 
@@ -72,7 +67,6 @@ class CorningLLMClient(LLMClient):
                 )
                 
                 text = resp.choices[0].message.content.strip()
-                print(f"[corning-llm] ok, chars={len(text)}")
                 return text
                 
             except PermissionDeniedError as e:
