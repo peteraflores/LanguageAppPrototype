@@ -10,7 +10,6 @@ import io
 # Set UTF-8 encoding for Windows console
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-print("boot")
 
 # --- pipeline pieces (your existing setup) ---
 lemmatizer = Lemmatizer(
@@ -20,7 +19,6 @@ lemmatizer = Lemmatizer(
     stanza_model_dir=r"stanza_resources",
     stanza_download_method=None,  # enforce offline/no-download behavior
 )
-print("lemmatizer ready") 
 
 known = load_known_lemmas_csv("known_lemmas.csv")
 print("known lemmas loaded:", len(known))
@@ -47,12 +45,10 @@ ranker = LemmaSalienceRanker(
     frequency_map=frequency_map,
     w_frequency=10.0  # Make frequency the dominant factor
 )
-print("ranker ready with frequency data")
 
 # --- LLM backend ---
 # llm = OpenAILLMClient()  # optionally: OpenAILLMClient(model="gpt-4.1-mini")
 llm = CorningLLMClient()
-print("llm client ready:", getattr(llm, "model", "<unknown>"))
 
 # --- rewriter ---
 rewriter = GreekAdaptiveRewriter(
@@ -61,8 +57,6 @@ rewriter = GreekAdaptiveRewriter(
     lemmatizer=lemmatizer,
     top_frequent_lemmas=top_frequent_lemmas  # Pass top frequent lemmas for threshold check
 )
-print("rewriter ready")
-
 # --- test passage ---
 passage = (
     "Χθες το απόγευμα μια δυνατή καταιγίδα έφτασε στα παράλια της Βόρειας Καρολίνας. "
@@ -71,8 +65,7 @@ passage = (
     "Οι αρχές ζήτησαν από τους κατοίκους να αποφύγουν τις άσκοπες μετακινήσεις και να προσέχουν τα πεσμένα κλαδιά. "
     "Σήμερα το πρωί η κατάσταση βελτιώθηκε, αλλά η προειδοποίηση για ισχυρούς ανέμους παραμένει και η θάλασσα είναι ακόμη φουρτουνιασμένη."
 )
-print("passage")
-print(passage)
+print("passage:",passage)
 
 # --- sanity check lemmatizer output like you did before ---
 rows = lemmatizer.lemmatize_passage(passage)
@@ -109,9 +102,14 @@ print(result.final_text)
 print("\n--- ROUNDS ---")
 for r in result.rounds:
     print(
-        f"round={r.round_index} mode={r.mode} cov={r.coverage:.3f} "
-        f"lemma_viol={len(r.violations_lemmas)} surf_viol={len(r.violations_surface)} "
-        f"banned_lemmas={r.banned_lemmas_size} banned_surface={r.banned_surface_size}"
+        f"round={r.round_index} "
+        f"mode={r.mode} "
+        f"cov_eff={r.coverage_eff:.3f} "
+        f"cov_base={r.coverage_base:.3f} "
+        f"lemma_viol={len(r.violations_lemmas)} "
+        f"surf_viol={len(r.violations_surface)} "
+        f"banned_lemmas={r.banned_lemmas_size} "
+        f"banned_surface={r.banned_surface_size} "
     )
     print(f"  essential_lemmas ({len(r.essential_lemmas)}): {r.essential_lemmas}")
     if r.violations_lemmas:
@@ -129,7 +127,7 @@ if result.final_text != passage:  # Only if text was rewritten
     final_analysis = ranker.analyze(result.final_text, known_lemmas=known)
     print(f"\n--- FINAL TEXT ANALYSIS ---")
     print(f"Total tokens: {final_analysis.total_tokens}")
-    print(f"Coverage: {final_analysis.coverage:.3f}")
+    print(f"Base Coverage: {final_analysis.coverage:.3f}")
     
     # Show lemmas contributing to coverage
     contributing_lemmas = []

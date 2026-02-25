@@ -35,9 +35,6 @@ class CorningLLMClient(LLMClient):
         try:
             models = self.client.models.list()
             available_models = [m.id for m in models]
-            print(f"[corning-llm] Available models: {available_models}")
-            if self.model not in available_models:
-                print(f"[corning-llm] WARNING: Requested model '{self.model}' not in available models")
         except Exception as e:
             print(f"[corning-llm] Failed to list models: {type(e).__name__}: {e}")
             # Don't fail here, just warn

@@ -268,9 +268,6 @@ class GreekAdaptiveRewriter:
                 banned_surface,
             )
 
-            print(f"[adapt] round={r} mode={current_mode} essential={len(essential_lemmas)} banned_lemmas={len(banned_lemmas)} banned_surface={len(banned_surface)}")
-            print(f"[adapt] prompt chars: system={len(system)} user={len(user)}")
-
             out = self.llm.generate(
                 system=system,
                 user=user,
