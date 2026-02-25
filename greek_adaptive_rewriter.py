@@ -235,6 +235,24 @@ class GreekAdaptiveRewriter:
 
         chosen_mode = mode or self._choose_mode(init_cov)
 
+        # --- Base-coverage controller state (B) ---
+        orig_tokens = int(getattr(init_analysis, "total_tokens", 0) or 0)
+
+        # Budget is "how many tokens worth of unknown lemmas we will allow"
+        base_budget0 = int(round((1.0 - float(target)) * orig_tokens))
+        slack = 2  # small safety margin for tokenization noise
+
+        allowed_new_budget = max(0, base_budget0 + slack)
+
+        # Controller knobs
+        base_eps = 0.01          # allow +/- 1% band around target
+        budget_step_down = 2     # tighten faster when base too low
+        budget_step_up = 1       # loosen slower when base too high
+
+        # Clamp range: don't let it explode
+        max_budget = max(0, base_budget0 + slack + 6)  # +6 is a small “escape hatch”
+        min_budget = 0
+
         unknown_ranked = self.ranker.filter_known(init_analysis, known_lemmas)
         keep_stats = self._choose_essential_set(init_analysis, unknown_ranked, known_lemmas, target, chosen_mode)
         essential_lemmas = [s.lemma for s in keep_stats]
@@ -289,18 +307,16 @@ class GreekAdaptiveRewriter:
 
             # Recompute keep-set each round, treating forced essentials as already "allowed"
             analysis_for_keep = analysis_base
-            T0 = int(getattr(analysis_for_keep, "total_tokens", 0) or 0)
 
-            # Budget computed exactly like _choose_essential_set does
-            base_budget = int(round((1.0 - float(target)) * T0))
-            slack = 2
-            if current_mode == RewriteMode.ULTRA_NOOB:
-                budget = max(base_budget, 18)
-            elif current_mode == RewriteMode.NOOB:
-                budget = max(base_budget, 14)
-            else:
-                budget = base_budget
-            budget = max(0, budget + slack)
+            # --- Update allowed-new budget using base-coverage feedback (B) ---
+            # If base coverage is too low, we allowed too much new vocab -> tighten budget.
+            # If base coverage is too high, we can loosen a bit -> allow slightly more new vocab.
+            if cov_base < (target - base_eps):
+                allowed_new_budget = max(min_budget, allowed_new_budget - budget_step_down)
+            elif cov_base > (target + base_eps):
+                allowed_new_budget = min(max_budget, allowed_new_budget + budget_step_up)
+
+            budget = allowed_new_budget  # NOTE: tied to original length, not current output length
 
             # Subtract forced essentials cost from budget
             forced_cost = 0
