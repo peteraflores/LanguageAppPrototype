@@ -92,8 +92,8 @@ result = rewriter.adapt(
 )
 
 print("\n--- ADAPT RESULT ---")
-print("initial_coverage:", result.initial_coverage)
-print("final_coverage:", result.final_coverage)
+print("initial_base_coverage:", result.initial_base_coverage)   # if that's what it is
+print("final_effective_coverage:", result.final_effective_coverage)  # this is cov_eff at end
 print("mode_used:", result.mode_used)
 print("\nFINAL TEXT:\n")
 print(result.final_text)
@@ -101,15 +101,14 @@ print(result.final_text)
 # --- debug trace so you can see what's happening round-by-round ---
 print("\n--- ROUNDS ---")
 for r in result.rounds:
+    new_share = 1.0 - r.coverage_base
     print(
-        f"round={r.round_index} "
-        f"mode={r.mode} "
-        f"cov_eff={r.coverage_eff:.3f} "
-        f"cov_base={r.coverage_base:.3f} "
-        f"lemma_viol={len(r.violations_lemmas)} "
-        f"surf_viol={len(r.violations_surface)} "
-        f"banned_lemmas={r.banned_lemmas_size} "
-        f"banned_surface={r.banned_surface_size} "
+        f"round={r.round_index} mode={r.mode} "
+        f"effective={r.coverage_eff:.3f} (Known∪Allowed) "
+        f"base={r.coverage_base:.3f} (Known-only) "
+        f"new={new_share:.3f} "
+        f"viol(L={len(r.violations_lemmas)},S={len(r.violations_surface)}) "
+        f"bans(L={r.banned_lemmas_size},S={r.banned_surface_size})"
     )
     print(f"  essential_lemmas ({len(r.essential_lemmas)}): {r.essential_lemmas}")
     if r.violations_lemmas:
@@ -122,32 +121,31 @@ print(f"Final keep-set ({len(result.essential_lemmas)}): {result.essential_lemma
 print(f"Final banned lemmas ({len(result.banned_lemmas)}): {result.banned_lemmas[:20]}...")
 print(f"Final banned surface ({len(result.banned_surface_forms)}): {result.banned_surface_forms[:20]}...")
 
-# Show which lemmas contribute to coverage
-if result.final_text != passage:  # Only if text was rewritten
-    final_analysis = ranker.analyze(result.final_text, known_lemmas=known)
-    print(f"\n--- FINAL TEXT ANALYSIS ---")
-    print(f"Total tokens: {final_analysis.total_tokens}")
-    print(f"Base Coverage: {final_analysis.coverage:.3f}")
-    
-    # Show lemmas contributing to coverage
-    contributing_lemmas = []
-    for stat in final_analysis.ranked:
-        if stat.lemma in known or stat.lemma in result.essential_lemmas:
-            contributing_lemmas.append((stat.lemma, stat.token_count, 'known' if stat.lemma in known else 'keep'))
-    
-    print(f"\nLemmas contributing to coverage (top 20):")
-    for lemma, count, source in sorted(contributing_lemmas, key=lambda x: x[1], reverse=True)[:20]:
-        print(f"  {lemma}: {count} tokens ({source})")
-    
-    # Show unknown lemmas that don't contribute
-    unknown_present = []
-    for stat in final_analysis.ranked:
-        if stat.lemma not in known and stat.lemma not in result.essential_lemmas:
-            unknown_present.append((stat.lemma, stat.token_count))
-    
-    if unknown_present:
-        print(f"\nUnknown lemmas NOT contributing to coverage:")
-        for lemma, count in sorted(unknown_present, key=lambda x: x[1], reverse=True):
-            print(f"  {lemma}: {count} tokens")
+final_base = ranker.analyze(result.final_text, known_lemmas=known)
+final_eff = ranker.analyze(result.final_text, known_lemmas=(known | set(result.essential_lemmas)))
+
+print(f"\n--- FINAL TEXT ANALYSIS ---")
+print(f"Total tokens: {final_base.total_tokens}")
+print(f"Base coverage (Known-only): {final_base.coverage:.3f}")
+print(f"Effective coverage (Known∪Allowed): {final_eff.coverage:.3f}")
+
+base_contrib = []
+eff_contrib = []
+
+for stat in final_base.ranked:
+    if stat.lemma in known:
+        base_contrib.append((stat.lemma, stat.token_count))
+
+for stat in final_eff.ranked:
+    if stat.lemma in known or stat.lemma in result.essential_lemmas:
+        eff_contrib.append((stat.lemma, stat.token_count, 'known' if stat.lemma in known else 'allowed'))
+
+print("\nTop base contributors (Known-only):")
+for lemma, count in sorted(base_contrib, key=lambda x: x[1], reverse=True)[:20]:
+    print(f"  {lemma}: {count}")
+
+print("\nTop effective contributors (Known∪Allowed):")
+for lemma, count, src in sorted(eff_contrib, key=lambda x: x[1], reverse=True)[:20]:
+    print(f"  {lemma}: {count} ({src})")
 
 print("\ndone")
