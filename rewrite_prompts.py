@@ -12,7 +12,9 @@ _SYSTEM_COMMON = (
 "Preserve meaning and named entities.\n"
 "Strictly obey vocabulary constraints.\n"
 "Output ONLY the rewritten Greek passage.\n"
-"Before outputting, scan your output and ensure none of the forbidden lemmas/surface forms appear.\n"
+"Before outputting, scan your output and ensure none of the forbidden surface forms appear.\n"
+"Keep the rewrite no longer than the original. Do not add extra explanation sentences.\n"
+"Do not add new people, objects, or events not in the original.\n"
 )
 
 def prompt_surgical(
@@ -28,7 +30,6 @@ def prompt_surgical(
         f"Target: ≥ {target:.3f} lemma coverage.\n"
         "Forbidden surface forms:\n"
         "\n".join(f"- {s}" for s in banned_surface) + "\n"
-        "Keep length similar to input.\n"
         "Prefer minimal edits.\n"
     )
     return system, user
@@ -50,7 +51,6 @@ def prompt_simplify_then_enforce(
         f"Target: ≥ {target:.3f} lemma coverage.\n"
         "Forbidden surface forms:\n"
         "\n".join(f"- {s}" for s in banned_surface) + "\n"
-        "Keep length similar to input.\n"
         "Prefer simpler clauses and common words; rephrase freely if needed."
 
     )
@@ -73,7 +73,6 @@ def prompt_retell(
         f"Target: ≥ {target:.3f} lemma coverage.\n"
         "Forbidden surface forms:\n"
         "\n".join(f"- {s}" for s in banned_surface) + "\n"
-        "Keep length similar to input.\n"
         "You may reorder/retell; keep all key facts."
     )
     return system, user
@@ -88,7 +87,7 @@ def prompt_noob(
     Noob mode - for beginners with low coverage (30-50%).
     Allows aggressive simplification and omission of details.
     """
-    system = (
+    system = _SYSTEM_COMMON + (
         "You rewrite Modern Greek text for absolute beginners.\n"
         "Rules:\n"
         "1) You MAY omit complex details, secondary information, and specific numbers.\n"
@@ -105,7 +104,6 @@ def prompt_noob(
         f"Target: ≥ {target:.3f} lemma coverage.\n"
         "Forbidden surface forms:\n"
         "\n".join(f"- {s}" for s in banned_surface) + "\n"
-        "Keep length similar to input.\n"
         "Aggressively simplify; it’s okay to omit secondary details."
     )
     return system, user
@@ -120,7 +118,7 @@ def prompt_ultra_noob(
     Ultra-noob mode - for absolute beginners with very low coverage (<30%).
     Creates ultra-simple text focusing on core message with allowed vocabulary.
     """
-    system = (
+    system = _SYSTEM_COMMON + (
         "You create ultra-simple Greek text for absolute beginners.\n"
         "Rules:\n"
         "1) Extract the main ideas and express them simply.\n"
@@ -136,7 +134,6 @@ def prompt_ultra_noob(
         f"Target: ≥ {target:.3f} lemma coverage.\n"
         "Forbidden surface forms:\n"
         "\n".join(f"- {s}" for s in banned_surface) + "\n"
-        "Keep length similar to input.\n"
         "Extreme simplification; focus on core message."
     )
     return system, user
