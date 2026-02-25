@@ -21,7 +21,6 @@ _SYSTEM_COMMON = (
 def prompt_surgical(
     passage: str,
     target_coverage: float,
-    keep_lemmas: Sequence[str],
     banned_lemmas: Sequence[str],
     banned_surface: Sequence[str],
 ) -> Tuple[str, str]:
@@ -33,10 +32,8 @@ def prompt_surgical(
     user = (
         "Input passage (Greek):\n"
         f"{passage}\n\n"
-        f"Target: lemma-coverage ≥ {target_coverage:.3f} relative to the provided known-lemma set.\n"
-        "You may introduce new lemmas ONLY from the keep-set below; all other unknown lemmas must be avoided.\n\n"
-        "Keep-set (allowed unknown lemmas):\n"
-        + "\n".join(f"- {l}" for l in keep_lemmas) + "\n\n"
+        f"Target: lemma-coverage ≥ {target_coverage:.3f} relative to the learner's known vocabulary.\n"
+        "Avoid using the following banned lemmas and surface forms.\n\n"
         "Banned lemmas (must not appear in any inflected form):\n"
         + "\n".join(f"- {l}" for l in banned_lemmas) + "\n\n"
         "Banned surface forms (must not appear verbatim):\n"
@@ -52,7 +49,6 @@ def prompt_surgical(
 
 def prompt_simplify_then_enforce(
     passage: str,
-    keep_lemmas: Sequence[str],
     banned_lemmas: Sequence[str],
     banned_surface: Sequence[str],
 ) -> Tuple[str, str]:
@@ -66,23 +62,20 @@ def prompt_simplify_then_enforce(
         "Stage 1 (simplify): Rewrite the passage into simpler Modern Greek while preserving all facts and meaning.\n"
         "Prefer shorter clauses, common vocabulary, and explicit subject-verb-object structure.\n"
         "Do NOT remove important details.\n\n"
-        "Stage 2 (enforce constraints): Adjust the simplified passage so it obeys the keep/bans below.\n\n"
+        "Stage 2 (enforce constraints): Adjust the simplified passage to avoid the banned vocabulary below.\n\n"
         "Input passage:\n"
         f"{passage}\n\n"
-        "Keep-set allowed unknown lemmas:\n"
-        + "\n".join(f"- {l}" for l in keep_lemmas) + "\n\n"
-        "Banned lemmas:\n"
+        "Banned lemmas (must not appear in any inflected form):\n"
         + "\n".join(f"- {l}" for l in banned_lemmas) + "\n\n"
-        "Banned surface forms:\n"
+        "Banned surface forms (must not appear verbatim):\n"
         + "\n".join(f"- {s}" for s in banned_surface) + "\n\n"
-        "Hard constraints: no banned lemma may appear in any inflected form. Output only the final enforced passage.\n"
+        "Hard constraints: do not use any banned lemma in any form. Output only the rewritten passage.\n"
     )
     return system, user
 
 
 def prompt_retell(
     passage: str,
-    keep_lemmas: Sequence[str],
     banned_lemmas: Sequence[str],
     banned_surface: Sequence[str],
     target_sentences: int,
@@ -95,14 +88,12 @@ def prompt_retell(
     user = (
         "Write a faithful retelling in Modern Greek.\n"
         "Keep the key facts and causal relations, but you may shorten and reorder for clarity.\n"
-        "Use as many sentences as needed to express the content with the allowed vocabulary.\n\n"
+        "Use as many sentences as needed to express the content while avoiding banned vocabulary.\n\n"
         "Input passage:\n"
         f"{passage}\n\n"
-        "Keep-set allowed unknown lemmas:\n"
-        + "\n".join(f"- {l}" for l in keep_lemmas) + "\n\n"
-        "Banned lemmas:\n"
+        "Banned lemmas (must not appear in any inflected form):\n"
         + "\n".join(f"- {l}" for l in banned_lemmas) + "\n\n"
-        "Banned surface forms:\n"
+        "Banned surface forms (must not appear verbatim):\n"
         + "\n".join(f"- {s}" for s in banned_surface) + "\n\n"
         "Hard constraints: do not use any banned lemma in any form. Output only the retelling.\n"
     )
@@ -112,7 +103,6 @@ def prompt_retell(
 def prompt_noob(
     passage: str,
     target_coverage: float,
-    keep_lemmas: Sequence[str],
     banned_lemmas: Sequence[str],
     banned_surface: Sequence[str],
 ) -> Tuple[str, str]:
@@ -127,7 +117,7 @@ def prompt_noob(
         "2) You MAY summarize and simplify aggressively.\n"
         "3) Focus on the MAIN idea and key events only.\n"
         "4) Use the simplest possible vocabulary.\n"
-        "5) Obey allowed/banned lemma constraints strictly.\n"
+        "5) Obey banned lemma constraints strictly.\n"
         "6) Output ONLY the simplified Greek passage. No commentary.\n"
     )
     
@@ -145,13 +135,10 @@ def prompt_noob(
         f"Target: lemma-coverage ≥ {target_coverage:.3f} relative to the beginner's known vocabulary.\n"
         "The learner knows VERY FEW words, so be extremely aggressive in simplifying.\n\n"
         
-        "Keep-set (allowed unknown lemmas - use these sparingly):\n"
-        + "\n".join(f"- {l}" for l in keep_lemmas) + "\n\n"
-        
         "Banned lemmas (must not appear in any form):\n"
         + "\n".join(f"- {l}" for l in banned_lemmas) + "\n\n"
         
-        "Banned surface forms (must not appear):\n"
+        "Banned surface forms (must not appear verbatim):\n"
         + "\n".join(f"- {s}" for s in banned_surface) + "\n\n"
         
         "Guidelines:\n"
@@ -168,7 +155,6 @@ def prompt_noob(
 
 def prompt_ultra_noob(
     passage: str,
-    keep_lemmas: Sequence[str],
     banned_lemmas: Sequence[str],
     banned_surface: Sequence[str],
     target_sentences: int = 3,
@@ -183,7 +169,7 @@ def prompt_ultra_noob(
         "1) Extract the main ideas and express them simply.\n"
         "2) Use the absolute simplest Greek possible.\n"
         "3) Write as many sentences as needed to convey the content with allowed vocabulary.\n"
-        "4) Obey vocabulary constraints strictly.\n"
+        "4) Avoid all banned vocabulary strictly.\n"
         "5) Output ONLY Greek. No commentary.\n"
     )
     
@@ -196,13 +182,10 @@ def prompt_ultra_noob(
         f"{passage}\n\n"
         
         "Vocabulary constraints:\n"
-        "Keep-set (these are the ONLY unknown words you may use):\n"
-        + "\n".join(f"- {l}" for l in keep_lemmas) + "\n\n"
-        
         "Banned lemmas (NEVER use these in any form):\n"
         + "\n".join(f"- {l}" for l in banned_lemmas) + "\n\n"
         
-        "Banned surface forms:\n"
+        "Banned surface forms (must not appear verbatim):\n"
         + "\n".join(f"- {s}" for s in banned_surface) + "\n\n"
         
         "Guidelines:\n"

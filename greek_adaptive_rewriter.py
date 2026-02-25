@@ -19,7 +19,7 @@ from typing import Iterable, List, Optional, Sequence, Set, Tuple
 import re
 import unicodedata
 from typing import Protocol, runtime_checkable, Dict
-from lemma_salience import LemmaSalienceRanker, LemmaStats, FREE_UPOS
+from lemma_salience import LemmaSalienceRanker, LemmaStats
 import rewrite_prompts  # NEW: Import our prompting module
 
 
@@ -35,6 +35,9 @@ class LemmatizerLike(Protocol):
 # -----------------------------
 # Utilities (mirror lemmatizer normalization logic)
 # -----------------------------
+
+# Free POS tags that don't count as unknown content words
+FREE_UPOS = {"DET", "ADP", "CCONJ", "SCONJ", "PART", "PRON"}
 
 _TOKEN_EDGE_PUNCT_RE = re.compile(
     r"^[^\wΑ-Ωα-ωΆΈΉΊΌΎΏάέήίόύώϊΐϋΰ]+|[^\wΑ-Ωα-ωΆΈΉΊΌΎΏάέήίόύώϊΐϋΰ]+$"
@@ -109,7 +112,7 @@ class RewriteConfig:
     # For ultra_noob mode, how many sentences in the summary?
     ultra_noob_target_sentences: int = 3
     # Track violations for auto-expansion
-    violation_threshold: int = 2  # Add to keep-set after this many violations
+    violation_threshold: int = 1  # Add to keep-set after this many violations (lowered for faster promotion)
     # Minimum vocabulary threshold
     min_vocab_threshold: float = 0.3  # Must know 30% of top N frequent lemmas
     top_n_frequent: int = 500  # Check against top 500 most frequent lemmas
@@ -129,7 +132,7 @@ class RoundSnapshot:
     violations_surface: List[str]
     banned_lemmas_size: int
     banned_surface_size: int
-    keep_lemmas: List[str]
+    essential_lemmas: List[str]
     text: str
 
 @dataclass
@@ -139,7 +142,7 @@ class RewriteResult:
     initial_coverage: float
     mode_used: RewriteMode
     rounds: List[RoundSnapshot]
-    keep_lemmas: List[str]
+    essential_lemmas: List[str]
     banned_lemmas: List[str]
     banned_surface_forms: List[str]
 
@@ -173,6 +176,9 @@ class GreekAdaptiveRewriter:
         
         # Track violation history for automatic keep-set expansion
         self._violation_history: Dict[str, int] = {}
+        
+        # Map surface forms to lemmas for better tracking
+        self._surface_to_lemma: Dict[str, str] = {}
 
     # ---- public API ----
 
@@ -210,7 +216,7 @@ class GreekAdaptiveRewriter:
                     initial_coverage=0.0,
                     mode_used=RewriteMode.ULTRA_NOOB,
                     rounds=[],
-                    keep_lemmas=[],
+                    essential_lemmas=[],
                     banned_lemmas=[],
                     banned_surface_forms=[],
                 )
@@ -222,10 +228,10 @@ class GreekAdaptiveRewriter:
         chosen_mode = mode or self._choose_mode(init_cov)
 
         unknown_ranked = self.ranker.filter_known(init_analysis, known_lemmas)
-        keep_stats = self._choose_keep_set(init_analysis, unknown_ranked, known_lemmas, target, mode=chosen_mode)
-        keep_lemmas = [s.lemma for s in keep_stats]
+        keep_stats = self._choose_essential_set(init_analysis, unknown_ranked, known_lemmas, target, mode=chosen_mode)
+        essential_lemmas = [s.lemma for s in keep_stats]
 
-        banned_lemmas, banned_surface = self._initial_bans(init_analysis, known_lemmas, keep_lemmas)
+        banned_lemmas, banned_surface = self._initial_bans(init_analysis, known_lemmas, essential_lemmas)
 
         rounds: List[RoundSnapshot] = []
         best_text = passage
@@ -236,6 +242,11 @@ class GreekAdaptiveRewriter:
         best_valid_text: Optional[str] = None
         best_valid_cov: float = -1.0
         best_valid_mode: RewriteMode = chosen_mode
+        best_valid_round: int = -1
+        
+        # Track for early stopping
+        consecutive_drops = 0
+        last_coverage = init_cov
 
         current_text = passage
         current_mode = chosen_mode
@@ -245,12 +256,12 @@ class GreekAdaptiveRewriter:
                 current_mode,
                 current_text,
                 target,
-                keep_lemmas,
+                essential_lemmas,
                 banned_lemmas,
                 banned_surface,
             )
 
-            print(f"[adapt] round={r} mode={current_mode} keep={len(keep_lemmas)} banned_lemmas={len(banned_lemmas)} banned_surface={len(banned_surface)}")
+            print(f"[adapt] round={r} mode={current_mode} essential={len(essential_lemmas)} banned_lemmas={len(banned_lemmas)} banned_surface={len(banned_surface)}")
             print(f"[adapt] prompt chars: system={len(system)} user={len(user)}")
 
             out = self.llm.generate(
@@ -269,7 +280,7 @@ class GreekAdaptiveRewriter:
 
             analysis = self.ranker.analyze(out, known_lemmas=known_lemmas)
             cov = float(analysis.coverage if analysis.coverage is not None else 1.0)
-            violations_lemmas, violations_surface = self._find_violations(out, analysis, known_lemmas, keep_lemmas, banned_lemmas, banned_surface)
+            violations_lemmas, violations_surface = self._find_violations(out, analysis, known_lemmas, essential_lemmas, banned_lemmas, banned_surface)
 
             is_valid = (not violations_lemmas) and (not violations_surface)
 
@@ -288,7 +299,7 @@ class GreekAdaptiveRewriter:
                     violations_surface=violations_surface,
                     banned_lemmas_size=len(banned_lemmas),
                     banned_surface_size=len(banned_surface),
-                    keep_lemmas=list(keep_lemmas),
+                    essential_lemmas=list(essential_lemmas),
                     text=out,
                 )
             )
@@ -300,6 +311,27 @@ class GreekAdaptiveRewriter:
                 # best_valid_* will already update above
                 current_text = out
                 break
+
+            # Early stopping check 1: Coverage dropped from best valid
+            if best_valid_cov > 0 and cov < best_valid_cov:
+                consecutive_drops += 1
+                print(f"[adapt] Coverage dropped to {cov:.1%} from best valid {best_valid_cov:.1%} (consecutive drops: {consecutive_drops})")
+                if consecutive_drops >= 3:  # Allow 3 drops before stopping
+                    print(f"[adapt] Early stopping: coverage dropped from best valid result")
+                    break
+            else:
+                consecutive_drops = 0
+
+            # Early stopping check 2: No significant improvement
+            if r > 2 and best_valid_cov > 0:  # Start checking after round 3
+                improvement = cov - best_valid_cov
+                if improvement < 0.005:  # Less than 0.5% improvement
+                    print(f"[adapt] No significant improvement ({improvement:.1%}), continuing...")
+                    if r > 4 and last_coverage < best_valid_cov + 0.005:  # Check after round 5
+                        print(f"[adapt] Early stopping: no significant improvement over multiple rounds")
+                        break
+
+            last_coverage = cov
 
             # track best (but keep the previous best so stagnation is computed correctly)
             prev_best_cov = best_cov
@@ -315,15 +347,54 @@ class GreekAdaptiveRewriter:
             else:
                 stagnation = 0
 
-            # Track violations for auto-expansion
+            # Track violations for auto-expansion - track ALL violations, not just those outside keep-set
             for lemma in violations_lemmas:
-                if lemma not in keep_lemmas:
+                self._violation_history[lemma] = self._violation_history.get(lemma, 0) + 1
+                
+                # Auto-add to keep-set if violated too many times
+                # This now includes banned lemmas that persistently violate
+                if lemma not in essential_lemmas and self._violation_history[lemma] >= self.cfg.violation_threshold:
+                    print(f"[adapt] Auto-adding {lemma} to keep-set after {self._violation_history[lemma]} violations")
+                    essential_lemmas.append(lemma)
+                    # Remove from banned set if it was there
+                    if lemma in banned_lemmas:
+                        banned_lemmas.remove(lemma)
+                        print(f"[adapt]   Removing {lemma} from banned set")
+                    # Also remove all surface forms of this lemma from banned surface
+                    removed_surfaces = []
+                    for surf in list(banned_surface):
+                        if self._surface_to_lemma.get(surf) == lemma:
+                            banned_surface.remove(surf)
+                            removed_surfaces.append(surf)
+                    if removed_surfaces:
+                        print(f"[adapt]   Removing surface forms: {removed_surfaces}")
+                    # Reset violation count
+                    self._violation_history[lemma] = 0
+            
+            # NEW: Track surface form violations and map them to lemmas
+            for sf in violations_surface:
+                # Try to find the lemma for this surface form
+                lemma = self._surface_to_lemma.get(sf)
+                if lemma:
                     self._violation_history[lemma] = self._violation_history.get(lemma, 0) + 1
+                    print(f"[adapt] Surface violation '{sf}' maps to lemma '{lemma}' (count={self._violation_history[lemma]})")
                     
                     # Auto-add to keep-set if violated too many times
-                    if self._violation_history[lemma] >= self.cfg.violation_threshold:
-                        print(f"[adapt] Auto-adding {lemma} to keep-set after {self._violation_history[lemma]} violations")
-                        keep_lemmas.append(lemma)
+                    if lemma not in essential_lemmas and self._violation_history[lemma] >= self.cfg.violation_threshold:
+                        print(f"[adapt] Auto-adding {lemma} to keep-set after {self._violation_history[lemma]} violations (via surface form)")
+                        essential_lemmas.append(lemma)
+                        # Remove from banned set if it was there
+                        if lemma in banned_lemmas:
+                            banned_lemmas.remove(lemma)
+                            print(f"[adapt]   Removing {lemma} from banned set")
+                        # Also remove all surface forms of this lemma from banned surface
+                        removed_surfaces = []
+                        for surf in list(banned_surface):
+                            if self._surface_to_lemma.get(surf) == lemma:
+                                banned_surface.remove(surf)
+                                removed_surfaces.append(surf)
+                        if removed_surfaces:
+                            print(f"[adapt]   Removing surface forms: {removed_surfaces}")
                         # Reset violation count
                         self._violation_history[lemma] = 0
             
@@ -332,7 +403,7 @@ class GreekAdaptiveRewriter:
                 analysis=analysis,
                 out_text=out,
                 known_lemmas=known_lemmas,
-                keep_lemmas=keep_lemmas,
+                essential_lemmas=essential_lemmas,
                 banned_lemmas=banned_lemmas,
                 banned_surface=banned_surface,
                 violations_lemmas=violations_lemmas,
@@ -376,7 +447,7 @@ class GreekAdaptiveRewriter:
             initial_coverage=init_cov,
             mode_used=final_mode,
             rounds=rounds,
-            keep_lemmas=list(keep_lemmas),
+            essential_lemmas=list(essential_lemmas),
             banned_lemmas=sorted(banned_lemmas),
             banned_surface_forms=sorted(banned_surface),
         )
@@ -424,9 +495,9 @@ class GreekAdaptiveRewriter:
             return RewriteMode.SURGICAL
         elif coverage >= 0.70:
             return RewriteMode.SIMPLIFY_THEN_ENFORCE
-        elif coverage >= 0.50:
+        elif coverage >= 0.60:
             return RewriteMode.RETELL
-        elif coverage >= 0.30:  # Changed back to 0.30
+        elif coverage >= 0.50:  # Changed back to 0.30
             return RewriteMode.NOOB
         else:
             # Start with ULTRA_NOOB if coverage < 30%
@@ -450,7 +521,7 @@ class GreekAdaptiveRewriter:
         
         return RewriteMode.ULTRA_NOOB
 
-    def _choose_keep_set(
+    def _choose_essential_set(
         self,
         analysis,
         unknown_ranked: List[LemmaStats],
@@ -460,9 +531,9 @@ class GreekAdaptiveRewriter:
     ) -> List[LemmaStats]:
         # For noob modes, use adjusted keep-sets
         if mode == RewriteMode.ULTRA_NOOB:
-            k = 5  # Increased from 2 to 5-6 new lemmas for ultra-noob
+            k = 12  # Increased from 5 to 12 new lemmas for ultra-noob
         elif mode == RewriteMode.NOOB:
-            k = 6  # Increased from 4 to 6 new lemmas for noob
+            k = 10  # Increased from 6 to 10 new lemmas for noob
         else:
             # Original K policy: scale with length + gap
             T = int(getattr(analysis, "total_tokens", 0) or 0)
@@ -489,7 +560,7 @@ class GreekAdaptiveRewriter:
         self,
         analysis,
         known_lemmas: Set[str],
-        keep_lemmas: Sequence[str],
+        essential_lemmas: Sequence[str],
     ) -> Tuple[Set[str], Set[str]]:
         """
         Ban every unknown lemma not in keep-set, plus a couple observed surface forms per lemma.
@@ -503,7 +574,7 @@ class GreekAdaptiveRewriter:
             st = analysis.lemma_stats.get(lemma)
             if st and _is_free(st.upos):
                 continue
-            if lemma in keep_lemmas:
+            if lemma in essential_lemmas:
                 continue
             banned_lemmas.add(lemma)
 
@@ -512,14 +583,21 @@ class GreekAdaptiveRewriter:
             st = analysis.lemma_stats.get(lemma)
             if not st:
                 continue
-            for sf in list(st.surface_forms)[: self.cfg.iteration.surface_examples_per_lemma]:
-                banned_surface.add(_norm(_strip_edge_punct(sf)))
+            # Track ALL surface forms, not just a few
+            for sf in st.surface_forms:
+                norm_sf = _norm(_strip_edge_punct(sf))
+                if norm_sf:
+                    banned_surface.add(norm_sf)
+                    # Map surface form to lemma for tracking
+                    self._surface_to_lemma[norm_sf] = lemma
 
         return banned_lemmas, banned_surface
 
     def _ban_add_budget(self, total_tokens: int) -> int:
+        # Remove the cap - allow banning as many lemmas as needed
         extra = int(total_tokens / max(1, self.cfg.iteration.ban_add_per_tokens))
-        return max(self.cfg.iteration.ban_add_floor, min(self.cfg.iteration.ban_add_cap, self.cfg.iteration.ban_add_floor + extra))
+        # No more cap - return all violations if needed
+        return max(self.cfg.iteration.ban_add_floor, self.cfg.iteration.ban_add_floor + extra)
 
     def _expand_bans(
         self,
@@ -527,54 +605,48 @@ class GreekAdaptiveRewriter:
         analysis,
         out_text: str,
         known_lemmas: Set[str],
-        keep_lemmas: Sequence[str],
+        essential_lemmas: Sequence[str],
         banned_lemmas: Set[str],
         banned_surface: Set[str],
         violations_lemmas: Sequence[str],
         violations_surface: Sequence[str],
     ) -> Tuple[Set[str], Set[str]]:
         """
-        Add top offending lemmas by token_count; add observed surface forms for those lemmas.
+        Add ALL violating lemmas (no budget limit); add observed surface forms for those lemmas.
         """
         banned_lemmas = set(banned_lemmas)
         banned_surface = set(banned_surface)
 
-        budget = self._ban_add_budget(int(analysis.total_tokens or 0))
-
-        # Anything that showed up as a violation gets “hotter”
+        # Anything that showed up as a violation gets "hotter"
         for lemma in violations_lemmas:
             self._bump_lemma_ban(lemma, amount=3)  # heavier weight for lemma violations
 
         for sf in violations_surface:
             self._bump_surface_ban(sf, amount=2)
 
-        # Build offender stats (token_count desc)
-        offenders: List[Tuple[int, str]] = []
+        # Ban ALL violations that aren't in essential_lemmas
         for lemma in violations_lemmas:
-            if lemma in keep_lemmas:
+            if lemma in essential_lemmas:
                 continue
             if lemma in known_lemmas:
                 continue
             st = analysis.lemma_stats.get(lemma)
             if st and _is_free(st.upos):
                 continue
-            tc = int(st.token_count) if st else 1
-            offenders.append((tc, lemma))
-
-        offenders.sort(reverse=True)
-        to_add = [lemma for _tc, lemma in offenders if lemma not in banned_lemmas][:budget]
-
-        for lemma in to_add:
+            
+            # Add to banned set
             banned_lemmas.add(lemma)
             self._bump_lemma_ban(lemma, amount=2)
 
-            st = analysis.lemma_stats.get(lemma)
+            # Also ban its surface forms
             if st:
-                for sf in list(st.surface_forms)[: self.cfg.iteration.surface_examples_per_lemma]:
+                for sf in st.surface_forms:  # Ban ALL surface forms, not just a few
                     norm_sf = _norm(_strip_edge_punct(sf))
                     if norm_sf:
                         banned_surface.add(norm_sf)
                         self._bump_surface_ban(norm_sf, amount=1)
+                        # Map surface form to lemma for tracking
+                        self._surface_to_lemma[norm_sf] = lemma
 
         # Surface violations: add directly (already normalized by _find_violations)
         for sf in violations_surface:
@@ -590,11 +662,11 @@ class GreekAdaptiveRewriter:
         text: str,
         analysis,
         known_lemmas: Set[str],
-        keep_lemmas: Sequence[str],
+        essential_lemmas: Sequence[str],
         banned_lemmas: Set[str],
         banned_surface: Set[str],
     ) -> Tuple[List[str], List[str]]:
-        keep_set = set(keep_lemmas)
+        essential_set = set(essential_lemmas)
 
         # Lemma violations: unknown content lemmas that are not in keep_set
         present_unknown: Set[str] = set()
@@ -608,7 +680,7 @@ class GreekAdaptiveRewriter:
                 continue
             present_unknown.add(lemma)
 
-        violations_lemmas = sorted([l for l in present_unknown if l not in keep_set])
+        violations_lemmas = sorted([l for l in present_unknown if l not in essential_set])
 
         # Also ensure banned lemmas are absent (even if keep-set accidentally contains them)
         violations_lemmas = _unique_preserve_order([l for l in violations_lemmas if l in present_unknown] + [l for l in sorted(banned_lemmas) if l in present_unknown])
@@ -627,28 +699,28 @@ class GreekAdaptiveRewriter:
         mode: RewriteMode,
         passage: str,
         target: float,
-        keep_lemmas: Sequence[str],
+        essential_lemmas: Sequence[str],
         banned_lemmas: Set[str],
         banned_surface: Set[str],
     ) -> Tuple[str, str]:
         # keep prompt sizes bounded
-        keep_lemmas = list(keep_lemmas)
+        essential_lemmas = list(essential_lemmas)
         banned_lemmas_list = self._top_banned_lemmas(banned_lemmas, cap=500)
         banned_surface_list = self._top_banned_surface(banned_surface, cap=500)
 
         if mode == RewriteMode.SURGICAL:
-            return rewrite_prompts.prompt_surgical(passage, target, keep_lemmas, banned_lemmas_list, banned_surface_list)
+            return rewrite_prompts.prompt_surgical(passage, target, banned_lemmas_list, banned_surface_list)
         elif mode == RewriteMode.SIMPLIFY_THEN_ENFORCE:
-            return rewrite_prompts.prompt_simplify_then_enforce(passage, keep_lemmas, banned_lemmas_list, banned_surface_list)
+            return rewrite_prompts.prompt_simplify_then_enforce(passage, banned_lemmas_list, banned_surface_list)
         elif mode == RewriteMode.RETELL:
-            return rewrite_prompts.prompt_retell(passage, keep_lemmas, banned_lemmas_list, banned_surface_list, target_sentences=self.cfg.retell_target_sentences)
+            return rewrite_prompts.prompt_retell(passage, banned_lemmas_list, banned_surface_list, target_sentences=self.cfg.retell_target_sentences)
         elif mode == RewriteMode.NOOB:
-            return rewrite_prompts.prompt_noob(passage, target, keep_lemmas, banned_lemmas_list, banned_surface_list)
+            return rewrite_prompts.prompt_noob(passage, target, banned_lemmas_list, banned_surface_list)
         elif mode == RewriteMode.ULTRA_NOOB:
-            return rewrite_prompts.prompt_ultra_noob(passage, keep_lemmas, banned_lemmas_list, banned_surface_list, target_sentences=self.cfg.ultra_noob_target_sentences)
+            return rewrite_prompts.prompt_ultra_noob(passage, banned_lemmas_list, banned_surface_list, target_sentences=self.cfg.ultra_noob_target_sentences)
         else:
             # Fallback to retell mode
-            return rewrite_prompts.prompt_retell(passage, keep_lemmas, banned_lemmas_list, banned_surface_list, target_sentences=self.cfg.retell_target_sentences)
+            return rewrite_prompts.prompt_retell(passage, banned_lemmas_list, banned_surface_list, target_sentences=self.cfg.retell_target_sentences)
 
     def _surface_tokens_norm(self, text: str) -> List[str]:
             # Prefer the lemmatizer’s token stream (robust to punctuation/tokenization quirks)

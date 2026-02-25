@@ -9,7 +9,7 @@ import os
 import unicodedata
 import math
 
-FREE_UPOS: Set[str] = {"DET", "ADP", "CCONJ", "SCONJ", "PART", "PRON", "AUX"}
+FREE_UPOS: Set[str] = {"DET", "ADP", "CCONJ", "SCONJ", "PART", "PRON"}
 
 def _is_free_upos(upos: str) -> bool:
     return (upos or "").upper() in FREE_UPOS
