@@ -307,6 +307,67 @@ class LemmaSalienceRanker:
             if (s.lemma not in known_lemmas) and (not _is_free_upos(s.upos))
         ]
 
+
+    def choose_keep_set_knapsack(
+        self,
+        unknown_ranked: List[LemmaStats],
+        *,
+        token_budget: int,
+        prefer_pos: Optional[Set[str]] = None,
+    ) -> List[LemmaStats]:
+        # Filter (optional)
+        items = unknown_ranked
+        if prefer_pos:
+            # keep preferred first, but still allow others if needed
+            preferred = [s for s in unknown_ranked if s.upos in prefer_pos]
+            nonpref = [s for s in unknown_ranked if s.upos not in prefer_pos]
+            items = preferred + nonpref
+
+        # Small-budget DP; if budget is big, greedy is fine
+        B = max(0, int(token_budget))
+        if B <= 0 or not items:
+            return []
+
+        # Cap DP complexity (avoid O(n*B) blowups)
+        if B > 250:
+            # Greedy by value/weight ratio as a fast approximation
+            items2 = sorted(items, key=lambda s: (s.score / max(1, s.token_count)), reverse=True)
+            out = []
+            used = 0
+            for s in items2:
+                w = max(1, int(s.token_count))
+                if used + w <= B:
+                    out.append(s)
+                    used += w
+            return out
+
+        # DP: dp[w] = (value, chosen_indices_bitset-ish via backpointers)
+        dp = [0.0] * (B + 1)
+        take = [[False] * (B + 1) for _ in range(len(items))]
+
+        for i, s in enumerate(items):
+            w = max(1, int(s.token_count))
+            v = float(s.score)
+            for cap in range(B, w - 1, -1):
+                cand = dp[cap - w] + v
+                if cand > dp[cap]:
+                    dp[cap] = cand
+                    take[i][cap] = True
+
+        # Reconstruct
+        cap = max(range(B + 1), key=lambda c: dp[c])
+        out = []
+        for i in range(len(items) - 1, -1, -1):
+            if take[i][cap]:
+                s = items[i]
+                out.append(s)
+                cap -= max(1, int(s.token_count))
+                if cap <= 0:
+                    break
+
+        out.reverse()
+        return out
+
     def choose_keep_set(
         self,
         unknown_ranked: List[LemmaStats],
