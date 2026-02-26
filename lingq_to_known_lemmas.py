@@ -1,10 +1,10 @@
 import csv
 import re
 import sys
-import unicodedata
+import os
 from collections import defaultdict
 
-import stanza
+from lemmatizer import Lemmatizer, normalize_text
 
 GREEK_RE = re.compile(r"[Α-Ωα-ωΆΈΉΊΌΎΏάέήίόύώϊΐϋΰ]")
 
@@ -15,11 +15,12 @@ SKIP_UPOS = {"PUNCT"}  # for term lists, be much less aggressive than your passa
 
 
 def norm(s: str) -> str:
-    return unicodedata.normalize("NFC", str(s)).strip()
+    # Use lemmatizer's normalize function without lowercase
+    return normalize_text(s).upper() if s else ""  # Preserve case by re-uppercasing
 
 
 def norm_lower(s: str) -> str:
-    return norm(s).lower()
+    return normalize_text(s)
 
 
 def guess_term_column(fieldnames):
@@ -40,13 +41,17 @@ def extract_tokens(term: str):
 
 
 def main(in_csv: str, out_csv: str, unknown_csv: str = "lingq_unlemmatized.csv"):
-    # Stanza in pretokenized mode: we provide tokens directly
-    nlp = stanza.Pipeline(
-        lang="el",
-        processors="tokenize,pos,lemma",
-        tokenize_pretokenized=True,
-        use_gpu=False,
-        verbose=False,
+    # Initialize lemmatizer instead of creating our own Stanza pipeline
+    udpipe_model_path = "greek-gdt-ud-2.5-191206.udpipe"
+    stanza_model_dir = os.path.join(os.getcwd(), "stanza_resources")
+    surface_lexicon_path = "surface_lemma_lexicon.csv"
+    
+    lemmatizer = Lemmatizer(
+        surface_lexicon_path=surface_lexicon_path,
+        udpipe_model_path=udpipe_model_path,
+        stanza_model_dir=stanza_model_dir,
+        use_lexicon=True,
+        skip_propn=False  # Don't skip proper nouns for LingQ terms
     )
 
     with open(in_csv, "r", encoding="utf-8") as f:
@@ -87,23 +92,26 @@ def main(in_csv: str, out_csv: str, unknown_csv: str = "lingq_unlemmatized.csv")
             unknown_rows.append((term, "NO_TOKENS"))
             continue
 
-        # Feed as one "sentence" with pretokenized tokens
-        doc = nlp([toks])
-
-        any_ok = False
-        for sent in doc.sentences:
-            for w in sent.words:
-                upos = (w.upos or "").upper()
+        # Join tokens and use lemmatizer
+        term_text = " ".join(toks)
+        
+        try:
+            results = lemmatizer.lemmatize_passage(term_text)
+            any_ok = False
+            
+            for surface_orig, lemma, upos, source in results:
                 if upos in SKIP_UPOS:
                     continue
-
-                lemma = norm_lower(w.lemma if w.lemma else w.text)
+                    
                 if not lemma:
                     continue
-
+                    
                 any_ok = True
                 lemma_counts[(lemma, upos)] += 1
-                lemma_examples[(lemma, upos)].add(norm(w.text))
+                lemma_examples[(lemma, upos)].add(surface_orig)
+        except Exception:
+            # If lemmatization fails, mark as unknown
+            any_ok = False
 
         if not any_ok:
             unknown_rows.append((term, "NO_ANALYSIS"))
