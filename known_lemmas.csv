@@ -1,6 +1,9 @@
 lemma,upos
 ένας,DET
 σε,ADP
+θέλω,VERB
+θάλασσα,NOUN
+καλά,ADV
 ρε,PART
 λέγω,VERB
 έρχομαι,VERB
@@ -66,6 +69,15 @@ lemma,upos
 βρίσκω,VERB
 γενικά,ADV
 γιατρός,NOUN
+βροχή,NOUN
+νύχτα,NOUN
+απόγευμα,NOUN
+σήμερα,ADV
+γρήγορα,ADV
+άνθρωπος,NOUN
+μεγάλος,ADJ
+υπάρχω,VERB
+δέντρο,NOUN
 γιορτάζω,VERB
 γνώρχω,VERB
 δίνω,VERB
