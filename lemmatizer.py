@@ -140,6 +140,89 @@ class Lemmatizer:
             out.append((form, lemma, upos))
         return out
 
+    def _is_coherent(self, lemma: str, upos: str) -> bool:
+        """Binary check: does lemma have expected ending for its UPOS?"""
+        if not lemma:
+            return False
+            
+        upos = upos.upper()
+        
+        if upos == "VERB":
+            return lemma.endswith(('ω', 'ώ', 'ομαι', 'μαι', 'ούμαι', 'ιέμαι'))
+        
+        elif upos == "NOUN":
+            return lemma.endswith(('ος', 'ός', 'α', 'ά', 'ο', 'ό', 'η', 'ή', 'ι', 'ί', 'μα'))
+        
+        elif upos == "ADJ":
+            return lemma.endswith(('ος', 'ός', 'ης', 'ής', 'ύς', 'υς', 'ικος', 'ικός'))
+        
+        elif upos == "ADV":
+            return lemma.endswith(('α', 'ά', 'ως', 'ώς'))
+        
+        # For other UPOS, consider all coherent
+        return True
+
+    def _character_similarity(self, surface: str, lemma: str) -> float:
+        """Simple character overlap ratio based on common prefix"""
+        if not surface or not lemma:
+            return 0.0
+            
+        common_prefix_len = 0
+        for i, (c1, c2) in enumerate(zip(surface, lemma)):
+            if c1 == c2:
+                common_prefix_len = i + 1
+            else:
+                break
+        return common_prefix_len / max(len(surface), len(lemma))
+
+    def _decide_lemma(
+        self,
+        surface: str,
+        stanza_lemma: str,
+        stanza_upos: str,
+        udpipe_lemma: str,
+        udpipe_upos: str
+    ) -> tuple[str, str, str]:
+        """
+        Decide which lemma/UPOS to use when models disagree.
+        Returns (lemma, upos, decision_reason)
+        """
+        # Case A: Full agreement
+        if stanza_lemma == udpipe_lemma and stanza_upos.upper() == udpipe_upos.upper():
+            return (stanza_lemma, stanza_upos.upper(), "FULL_AGREEMENT")
+        
+        # Case B: UPOS agreement only
+        elif stanza_upos.upper() == udpipe_upos.upper():
+            stanza_coherent = self._is_coherent(stanza_lemma, stanza_upos)
+            udpipe_coherent = self._is_coherent(udpipe_lemma, udpipe_upos)
+            
+            if stanza_coherent and not udpipe_coherent:
+                return (stanza_lemma, stanza_upos.upper(), "UPOS_AGREE_COHERENT_STANZA")
+            elif udpipe_coherent and not stanza_coherent:
+                return (udpipe_lemma, udpipe_upos.upper(), "UPOS_AGREE_COHERENT_UDPIPE")
+            else:
+                # Both coherent or both incoherent - pick closest to surface
+                if self._character_similarity(surface, stanza_lemma) >= self._character_similarity(surface, udpipe_lemma):
+                    return (stanza_lemma, stanza_upos.upper(), "UPOS_AGREE_SURFACE_SIMILAR")
+                else:
+                    return (udpipe_lemma, udpipe_upos.upper(), "UPOS_AGREE_SURFACE_SIMILAR")
+        
+        # Case C: Any disagreement (UPOS or both)
+        else:
+            stanza_coherent = self._is_coherent(stanza_lemma, stanza_upos)
+            udpipe_coherent = self._is_coherent(udpipe_lemma, udpipe_upos)
+            
+            if stanza_coherent and not udpipe_coherent:
+                return (stanza_lemma, stanza_upos.upper(), "DISAGREE_COHERENT_STANZA")
+            elif udpipe_coherent and not stanza_coherent:
+                return (udpipe_lemma, udpipe_upos.upper(), "DISAGREE_COHERENT_UDPIPE")
+            else:
+                # Both coherent or both incoherent - pick closest to surface
+                if self._character_similarity(surface, stanza_lemma) >= self._character_similarity(surface, udpipe_lemma):
+                    return (stanza_lemma, stanza_upos.upper(), "DISAGREE_SURFACE_SIMILAR")
+                else:
+                    return (udpipe_lemma, udpipe_upos.upper(), "DISAGREE_SURFACE_SIMILAR")
+
     def _keep_token(self, surface_clean: str, upos: str) -> bool:
         if not surface_clean:
             return False
@@ -234,35 +317,38 @@ class Lemmatizer:
                 # Decide what we output, and log issues for review
                 if stanza_lemma and ud_matched and udpipe_lemma:
                     # Both have lemmas and we successfully aligned
-                    if stanza_lemma == udpipe_lemma and stanza_upos_norm.upper() == udpipe_upos:
-                        # Log agreement to needs_review
-                        self._append_needs_review(
-                            token_index,
-                            original_surface,
-                            surface_norm,
-                            stanza_lemma,
-                            stanza_upos_norm,
-                            udpipe_lemma,
-                            udpipe_upos,
-                            "AGREE",
-                            sent.text,
-                        )
-                        results.append((original_surface, stanza_lemma, udpipe_upos, "Agree(Stanza+UDPipe)"))
+                    lemma, upos, decision_reason = self._decide_lemma(
+                        surface_norm,
+                        stanza_lemma,
+                        stanza_upos_norm,
+                        udpipe_lemma,
+                        udpipe_upos
+                    )
+                    
+                    # Log the decision
+                    self._append_needs_review(
+                        token_index,
+                        original_surface,
+                        surface_norm,
+                        stanza_lemma,
+                        stanza_upos_norm,
+                        udpipe_lemma,
+                        udpipe_upos,
+                        decision_reason,
+                        sent.text,
+                    )
+                    
+                    # Map decision reasons to simpler sources for results
+                    if "STANZA" in decision_reason:
+                        source = "Stanza"
+                    elif "UDPIPE" in decision_reason:
+                        source = "UDPipe"
+                    elif decision_reason == "FULL_AGREEMENT":
+                        source = "Agree(Stanza+UDPipe)"
                     else:
-                        decision = "DISAGREE_LEMMA" if stanza_lemma != udpipe_lemma else "DISAGREE_UPOS"
-                        self._append_needs_review(
-                            token_index,
-                            original_surface,
-                            surface_norm,
-                            stanza_lemma,
-                            stanza_upos_norm,
-                            udpipe_lemma,
-                            udpipe_upos,
-                            decision,
-                            sent.text,
-                        )
-                        # runtime choice: prefer Stanza
-                        results.append((original_surface, stanza_lemma, stanza_upos_norm.upper(), "Stanza"))
+                        source = decision_reason
+                    
+                    results.append((original_surface, lemma, upos, source))
                     continue
 
                 # If UDPipe didn't align, that's an alignment/tokenization issue—not "UDPipe had no analysis".
