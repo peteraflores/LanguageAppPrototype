@@ -30,9 +30,6 @@ class Lemmatizer:
         udpipe_model_path: str,
         use_lexicon: bool = True,
         skip_propn: bool = True,
-        auto_promote_agree: bool = True,
-        agree_min_count: int = 3,
-        agree_counts_path: str = "agree_counts.csv",
         needs_review_path: str = "needs_review_instances.csv",
         stanza_model_dir: str | None = None,
         stanza_download_method=None,
@@ -42,10 +39,6 @@ class Lemmatizer:
 
         self.lexicon_path = surface_lexicon_path
         self.needs_review_path = needs_review_path
-        self.agree_counts_path = agree_counts_path
-
-        self.auto_promote_agree = auto_promote_agree
-        self.agree_min_count = max(1, int(agree_min_count))
 
         # Load trusted lexicon
         self.surface_lexicon = self.load_surface_lexicon_csv(surface_lexicon_path)
@@ -55,10 +48,6 @@ class Lemmatizer:
         for s, pairs in self.surface_lexicon.items():
             for (l, u) in pairs:
                 self._lexicon_triples.add((s, l, u))
-
-        # Load persistent agreement counts
-        self._agree_counts = self._load_agree_counts(self.agree_counts_path)
-        self._agree_counts_dirty = False
 
         # Ensure review file exists
         if not os.path.exists(self.needs_review_path):
@@ -192,34 +181,6 @@ class Lemmatizer:
                 ]
             )
 
-    def _maybe_promote_agree(self, surface_norm: str, lemma_norm: str, upos: str) -> bool:
-        """
-        Promote only when Stanza and UDPipe agree (caller enforces) and the agreement
-        has been observed >= agree_min_count times (persisted in agree_counts.csv).
-
-        This is the ONLY promotion entry point. It increments the in-memory counter and
-        marks agree-counts as dirty; it does not write agree_counts.csv. The caller
-        should flush counts periodically (e.g., once per passage).
-
-        Returns True if the (surface, lemma, upos) triple was appended to the trusted lexicon.
-        """
-        triple = (surface_norm, lemma_norm, upos)
-        if triple in self._lexicon_triples:
-            return False
-
-        # Increment persistent agreement count (kept in memory until flushed)
-        self._agree_counts[triple] = self._agree_counts.get(triple, 0) + 1
-        self._agree_counts_dirty = True
-
-        if self._agree_counts[triple] < self.agree_min_count:
-            return False
-
-        # Append to trusted lexicon (single code path)
-        self._append_to_lexicon(surface_norm, lemma_norm, upos)
-        # Drop counter now that it's promoted
-        self._agree_counts.pop(triple, None)
-        self._agree_counts_dirty = True
-        return True
 
     def lemmatize_passage(self, passage: str) -> list[tuple[str, str, str, str]]:
         doc = self.nlp(passage)
@@ -274,8 +235,18 @@ class Lemmatizer:
                 if stanza_lemma and ud_matched and udpipe_lemma:
                     # Both have lemmas and we successfully aligned
                     if stanza_lemma == udpipe_lemma and stanza_upos_norm.upper() == udpipe_upos:
-                        if self.auto_promote_agree:
-                            self._maybe_promote_agree(surface_norm, stanza_lemma, udpipe_upos)
+                        # Log agreement to needs_review
+                        self._append_needs_review(
+                            token_index,
+                            original_surface,
+                            surface_norm,
+                            stanza_lemma,
+                            stanza_upos_norm,
+                            udpipe_lemma,
+                            udpipe_upos,
+                            "AGREE",
+                            sent.text,
+                        )
                         results.append((original_surface, stanza_lemma, udpipe_upos, "Agree(Stanza+UDPipe)"))
                     else:
                         decision = "DISAGREE_LEMMA" if stanza_lemma != udpipe_lemma else "DISAGREE_UPOS"
@@ -360,57 +331,9 @@ class Lemmatizer:
                 )
                 results.append((original_surface, surface_norm, stanza_upos_norm.upper(), "Fallback"))
 
-        # Flush agree-counts once per passage (avoid per-token disk writes)
-        if getattr(self, "_agree_counts_dirty", False):
-            self._save_agree_counts()
-            self._agree_counts_dirty = False
-
         return results
 
-    def _load_agree_counts(self, path: str) -> dict[tuple[str, str, str], int]:
-        counts: dict[tuple[str, str, str], int] = {}
-        if not os.path.exists(path):
-            return counts
-        with open(path, "r", encoding="utf-8") as f:
-            r = csv.DictReader(f)
-            for row in r:
-                s = row["surface"].strip()
-                l = row["lemma"].strip()
-                u = row["upos"].strip().upper()
-                c = int(row["count"])
-                counts[(s, l, u)] = c
-        return counts
 
-    def _save_agree_counts(self) -> None:
-        # write atomically so you don’t corrupt the file on crash
-        tmp = self.agree_counts_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8", newline="") as f:
-            w = csv.writer(f)
-            w.writerow(["surface", "lemma", "upos", "count"])
-            for (s, l, u), c in sorted(self._agree_counts.items()):
-                w.writerow([s, l, u, c])
-        os.replace(tmp, self.agree_counts_path)
-
-    def _append_to_lexicon(self, surface: str, lemma: str, upos: str) -> None:
-        surface = _norm(surface)
-        lemma = _norm(lemma)
-        upos = (upos or "").strip().upper()
-        if not surface or not lemma or not upos:
-            return
-
-        triple = (surface, lemma, upos)
-        if triple in self._lexicon_triples:
-            return
-
-        write_header = not os.path.exists(self.lexicon_path)
-        with open(self.lexicon_path, "a", encoding="utf-8", newline="") as f:
-            w = csv.writer(f)
-            if write_header:
-                w.writerow(["surface", "lemma", "upos"])
-            w.writerow([surface, lemma, upos])
-
-        self.surface_lexicon.setdefault(surface, set()).add((lemma, upos))
-        self._lexicon_triples.add(triple)
     def _parse_udpipe_conllu_sents(self, conllu_text: str) -> list[list[tuple[str, str, str]]]:
         sents: list[list[tuple[str, str, str]]] = []
         cur: list[tuple[str, str, str]] = []
