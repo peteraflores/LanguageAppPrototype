@@ -13,9 +13,8 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 # --- pipeline pieces (your existing setup) ---
 lemmatizer = Lemmatizer(
-    surface_lexicon_path="surface_lexicon.csv",
+    surface_lexicon_path="surface_lemma_lexicon.csv",
     udpipe_model_path="greek-gdt-ud-2.5-191206.udpipe",
-    auto_promote_agree=False,
     stanza_model_dir=r"stanza_resources",
     stanza_download_method=None,  # enforce offline/no-download behavior
 )
