@@ -33,6 +33,7 @@ class Lemmatizer:
         needs_review_path: str = "needs_review_instances.csv",
         stanza_model_dir: str | None = None,
         stanza_download_method=None,
+        lemma_frequency_path: str = "lemma_frequency.csv",
     ):
         self.use_lexicon = use_lexicon
         self.skip_propn = skip_propn
@@ -48,6 +49,9 @@ class Lemmatizer:
         for s, pairs in self.surface_lexicon.items():
             for (l, u) in pairs:
                 self._lexicon_triples.add((s, l, u))
+
+        # Load lemma frequencies
+        self.lemma_frequencies = self._load_lemma_frequencies(lemma_frequency_path)
 
         # Ensure review file exists
         if not os.path.exists(self.needs_review_path):
@@ -109,20 +113,40 @@ class Lemmatizer:
                 surface2.setdefault(surface, set()).add((lemma, upos))
         return surface2
 
-    def _lexicon_lookup(self, surface: str, stanza_upos: str | None) -> tuple[str, str] | None:
+    def _load_lemma_frequencies(self, path: str) -> dict[str, int]:
+        """Load lemma frequencies from CSV file."""
+        frequencies = {}
+        if not os.path.exists(path):
+            return frequencies
+        with open(path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                lemma = _norm(row["lemma"])
+                frequency = int(row["frequency"])
+                frequencies[lemma] = frequency
+        return frequencies
+
+    def _lexicon_lookup(self, surface: str, stanza_upos: str | None) -> tuple[str, str] | set[tuple[str, str]] | None:
+        """
+        Returns either:
+        - None if no match found
+        - (lemma, upos) tuple if single match
+        - set of (lemma, upos) tuples if multiple UPOS options (always consult both models)
+        """
         if not self.use_lexicon:
             return None
         s = _norm(surface)
         options = self.surface_lexicon.get(s)
         if not options:
             return None
-        if stanza_upos:
-            stanza_upos = stanza_upos.upper()
-            for lemma, upos in options:
-                if upos == stanza_upos:
-                    return lemma, upos
-        lemma, upos = sorted(options)[0]
-        return lemma, upos
+            
+        # If only one option, return it directly
+        if len(options) == 1:
+            lemma, upos = list(options)[0]
+            return lemma, upos
+        
+        # Multiple options exist - always return all options for multi-model disambiguation
+        return options
 
     def _parse_udpipe_conllu(self, conllu_text: str) -> list[tuple[str, str, str]]:
         out: list[tuple[str, str, str]] = []
@@ -174,6 +198,66 @@ class Lemmatizer:
             else:
                 break
         return common_prefix_len / max(len(surface), len(lemma))
+
+    def _decide_from_lexicon_options(
+        self,
+        surface: str,
+        lexicon_options: set[tuple[str, str]],
+        stanza_lemma: str,
+        stanza_upos: str,
+        udpipe_lemma: str,
+        udpipe_upos: str
+    ) -> tuple[str, str, str]:
+        """
+        Decide which lexicon entry to use when multiple UPOS options exist.
+        Returns (lemma, upos, decision_reason)
+        """
+        # Check if models match any lexicon option
+        stanza_match = None
+        udpipe_match = None
+        
+        stanza_norm = (_norm(stanza_lemma), stanza_upos.upper()) if stanza_lemma else None
+        udpipe_norm = (_norm(udpipe_lemma), udpipe_upos.upper()) if udpipe_lemma else None
+        
+        for lemma, upos in lexicon_options:
+            if stanza_norm and (lemma, upos) == stanza_norm:
+                stanza_match = (lemma, upos)
+            if udpipe_norm and (lemma, upos) == udpipe_norm:
+                udpipe_match = (lemma, upos)
+        
+        # Case 1: Only one model matches a lexicon option
+        if stanza_match and not udpipe_match:
+            return (stanza_match[0], stanza_match[1], "LEXICON_SINGLE_MODEL_MATCH")
+        elif udpipe_match and not stanza_match:
+            return (udpipe_match[0], udpipe_match[1], "LEXICON_SINGLE_MODEL_MATCH")
+        
+        # Case 2: Both models match lexicon options - use frequency
+        elif stanza_match and udpipe_match:
+            stanza_freq = self.lemma_frequencies.get(stanza_match[0], 0)
+            udpipe_freq = self.lemma_frequencies.get(udpipe_match[0], 0)
+            
+            if stanza_freq >= udpipe_freq:
+                return (stanza_match[0], stanza_match[1], "LEXICON_BOTH_MATCH_FREQ")
+            else:
+                return (udpipe_match[0], udpipe_match[1], "LEXICON_BOTH_MATCH_FREQ")
+        
+        # Case 3: Neither model matches - pick most frequent from lexicon
+        else:
+            best_option = None
+            best_freq = -1
+            
+            for lemma, upos in lexicon_options:
+                freq = self.lemma_frequencies.get(lemma, 0)
+                if freq > best_freq:
+                    best_freq = freq
+                    best_option = (lemma, upos)
+            
+            if best_option:
+                return (best_option[0], best_option[1], "LEXICON_NO_MATCH_FREQ")
+            else:
+                # Fallback: just take the first option
+                first_option = list(lexicon_options)[0]
+                return (first_option[0], first_option[1], "LEXICON_NO_MATCH_FREQ")
 
     def _decide_lemma(
         self,
@@ -300,13 +384,40 @@ class Lemmatizer:
 
                 surface_norm = _norm(surface_clean)
 
-                # Trusted lexicon fast-path
+                # Trusted lexicon lookup
                 lex = self._lexicon_lookup(surface_clean, stanza_upos)
-                if lex:
+                
+                # Handle lexicon results
+                if lex and isinstance(lex, tuple):
+                    # Single match found
                     lemma, upos = lex
                     results.append((original_surface, lemma, upos, "Lexicon"))
                     continue
+                elif lex and isinstance(lex, set):
+                    # Multiple UPOS options - need to consult models
+                    stanza_lemma = _norm(word.lemma) if word.lemma else ""
+                    stanza_upos_norm = stanza_upos or ""
+                    
+                    udpipe_lemma, udpipe_upos, ud_i, ud_matched = self._udpipe_match_next(
+                        ud_tokens, ud_i, surface_norm, lookahead=6
+                    )
+                    
+                    # Use the multi-option decision logic
+                    lemma, upos, decision_reason = self._decide_from_lexicon_options(
+                        surface_norm,
+                        lex,  # the set of options
+                        stanza_lemma,
+                        stanza_upos_norm,
+                        udpipe_lemma,
+                        udpipe_upos
+                    )
+                    
+                    # Don't log - we're still using the lexicon
+                    
+                    results.append((original_surface, lemma, upos, "Lexicon"))
+                    continue
 
+                # No lexicon match - proceed with model-based lemmatization
                 stanza_lemma = _norm(word.lemma) if word.lemma else ""
                 stanza_upos_norm = stanza_upos or ""
 
