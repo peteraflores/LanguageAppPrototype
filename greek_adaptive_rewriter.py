@@ -102,7 +102,7 @@ class IterationPolicy:
 
 @dataclass
 class RewriteConfig:
-    target_coverage: float = 0.95
+    target_coverage: float = 0.90
     prefer_pos: Set[str] = field(default_factory=lambda: {"NOUN", "VERB", "ADJ", "ADV"})
     temperature: float = 0.2
     iteration: IterationPolicy = field(default_factory=IterationPolicy)
