@@ -23,6 +23,17 @@ def _strip_edge_punct(tok: str) -> str:
 def _norm(s: str) -> str:
     return unicodedata.normalize("NFC", str(s)).strip().lower()
 
+
+# Public versions for external use
+def strip_edge_punct(tok: str) -> str:
+    """Public function for stripping edge punctuation from tokens."""
+    return _strip_edge_punct(tok)
+
+
+def normalize_text(s: str) -> str:
+    """Public function for normalizing text (NFC + strip + lowercase)."""
+    return _norm(s)
+
 class Lemmatizer:
     def __init__(
         self,
@@ -125,6 +136,15 @@ class Lemmatizer:
                 frequency = int(row["frequency"])
                 frequencies[lemma] = frequency
         return frequencies
+    
+    def get_lemma_frequency(self, lemma: str) -> int:
+        """Get the frequency of a normalized lemma."""
+        return self.lemma_frequencies.get(_norm(lemma), 0)
+    
+    def get_sentences(self, passage: str):
+        """Get sentence segmentation from Stanza."""
+        doc = self.nlp(passage)
+        return doc
 
     def _lexicon_lookup(self, surface: str, stanza_upos: str | None) -> tuple[str, str] | set[tuple[str, str]] | None:
         """

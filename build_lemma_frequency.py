@@ -11,14 +11,13 @@ import csv
 import os
 from collections import Counter
 from pathlib import Path
-import unicodedata
 
-from lemmatizer import Lemmatizer
+from lemmatizer import Lemmatizer, normalize_text
 
 
 def _norm_lemma(s: str) -> str:
-    """Match lemmatizer._norm behavior: NFC + strip + lowercase"""
-    return unicodedata.normalize("NFC", str(s)).strip().lower()
+    """Use lemmatizer's normalize function"""
+    return normalize_text(s)
 
 
 def load_subtlex_frequencies(path: str) -> list[tuple[str, int]]:
@@ -66,21 +65,15 @@ def load_surface_lexicon_csv(path: str) -> dict[str, set[tuple[str, str]]]:
     CSV columns: surface, lemma, upos
     Returns dict mapping normalized surface -> set of (lemma, upos) tuples
     """
-    surface_to_lemmas: dict[str, set[tuple[str, str]]] = {}
-    if not os.path.exists(path):
-        return surface_to_lemmas
-    
-    with open(path, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            surface = _norm_lemma(row["surface"])
-            lemma = _norm_lemma(row["lemma"])
-            upos = row["upos"].strip().upper()
-            if not surface or not lemma or not upos:
-                continue
-            surface_to_lemmas.setdefault(surface, set()).add((lemma, upos))
-    
-    return surface_to_lemmas
+    # Just use the lemmatizer's lexicon loading method
+    # Create a temporary lemmatizer just to load the lexicon
+    temp_lemmatizer = Lemmatizer(
+        surface_lexicon_path=path,
+        udpipe_model_path="greek-gdt-ud-2.5-191206.udpipe",  # dummy, won't be used
+        use_lexicon=True,
+        skip_propn=False
+    )
+    return temp_lemmatizer.surface_lexicon
 
 
 def build_lemma_frequency_table(

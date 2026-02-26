@@ -21,6 +21,7 @@ import unicodedata
 from typing import Protocol, runtime_checkable, Dict
 from lemma_salience import LemmaSalienceRanker, LemmaStats
 import rewrite_prompts  # NEW: Import our prompting module
+from lemmatizer import strip_edge_punct, normalize_text  # Import from lemmatizer
 
 
 @runtime_checkable
@@ -30,24 +31,21 @@ class LemmatizerLike(Protocol):
         Must match your Lemmatizer.lemmatize_passage output:
         (original_surface, lemma, upos, source)
         """
+    def get_lemma_frequency(self, lemma: str) -> int:
+        """Get frequency for a lemma."""
+        ...
 
 
 # -----------------------------
-# Utilities (mirror lemmatizer normalization logic)
+# Utilities (use lemmatizer functions)
 # -----------------------------
 
 # Free POS tags that don't count as unknown content words
 FREE_UPOS = {"DET", "ADP", "CCONJ", "SCONJ", "PART", "PRON"}
 
-_TOKEN_EDGE_PUNCT_RE = re.compile(
-    r"^[^\wΑ-Ωα-ωΆΈΉΊΌΎΏάέήίόύώϊΐϋΰ]+|[^\wΑ-Ωα-ωΆΈΉΊΌΎΏάέήίόύώϊΐϋΰ]+$"
-)
-
-def _strip_edge_punct(tok: str) -> str:
-    return _TOKEN_EDGE_PUNCT_RE.sub("", tok.strip())
-
-def _norm(s: str) -> str:
-    return unicodedata.normalize("NFC", str(s)).strip().lower()
+# Use lemmatizer's functions
+_strip_edge_punct = strip_edge_punct
+_norm = normalize_text
 
 def _is_free(upos: str) -> bool:
     return (upos or "").upper() in FREE_UPOS
@@ -764,24 +762,20 @@ class GreekAdaptiveRewriter:
             return rewrite_prompts.prompt_retell(passage, target, banned_surface_list)
 
     def _surface_tokens_norm(self, text: str) -> List[str]:
-            # Prefer the lemmatizer’s token stream (robust to punctuation/tokenization quirks)
-            if self.lemmatizer is not None:
-                try:
-                    rows = self.lemmatizer.lemmatize_passage(text)
-                    toks = []
-                    for (surface_orig, _lemma, _upos, _src) in rows:
-                        s = _norm(_strip_edge_punct(surface_orig))
-                        if s:
-                            toks.append(s)
-                    return toks
-                except Exception:
-                    # Don’t let tokenization failure crash adaptation; fall back.
-                    pass
-
-            # Fallback: regex-based tokens (still better than split()).
-            # This finds word-like spans (Greek/Latin/digits/underscore) and then normalizes.
-            raw = re.findall(r"[\wΑ-Ωα-ωΆΈΉΊΌΎΏάέήίόύώϊΐϋΰ]+", text)
-            return [t for t in (_norm(x) for x in raw) if t]
+        # Always use the lemmatizer's token stream (robust to punctuation/tokenization quirks)
+        if self.lemmatizer is not None:
+            try:
+                rows = self.lemmatizer.lemmatize_passage(text)
+                toks = []
+                for (surface_orig, _lemma, _upos, _src) in rows:
+                    s = _norm(_strip_edge_punct(surface_orig))
+                    if s:
+                        toks.append(s)
+                return toks
+            except Exception:
+                # If lemmatizer fails, return empty list rather than unreliable fallback
+                return []
+        return []
     
     def _surface_forms_for_lemma_in_text(self, text: str, lemma: str) -> List[str]:
         if not lemma or self.lemmatizer is None:

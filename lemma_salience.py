@@ -8,6 +8,7 @@ import csv
 import os
 import unicodedata
 import math
+from lemmatizer import normalize_text  # Import from lemmatizer
 
 FREE_UPOS: Set[str] = {"DET", "ADP", "CCONJ", "SCONJ", "PART", "PRON"}
 
@@ -15,8 +16,8 @@ def _is_free_upos(upos: str) -> bool:
     return (upos or "").upper() in FREE_UPOS
 
 def _norm_lemma(s: str) -> str:
-    # Match lemmatizer._norm behavior: NFC + strip + lowercase
-    return unicodedata.normalize("NFC", str(s)).strip().lower()
+    # Use lemmatizer's normalize function
+    return normalize_text(s)
 
 
 def load_known_lemmas_csv(
@@ -185,7 +186,11 @@ class LemmaSalienceRanker:
         self.w_frequency = w_frequency
         self.early_bonus_s0 = early_bonus_s0
         self.early_bonus_s1 = early_bonus_s1
-        self.frequency_map = frequency_map or {}
+        # If frequency map not provided, try to get from lemmatizer
+        if frequency_map is None and hasattr(lemmatizer, 'lemma_frequencies'):
+            self.frequency_map = lemmatizer.lemma_frequencies
+        else:
+            self.frequency_map = frequency_map or {}
 
     def analyze(
         self,
@@ -196,8 +201,8 @@ class LemmaSalienceRanker:
         If known_lemmas is provided, compute coverage over kept tokens and
         still return ranking over ALL lemmas (use filter_known to get unknowns).
         """
-        # Get sentence segmentation (we rely on your stanza pipeline)
-        doc = self.lemmatizer.nlp(passage)
+        # Get sentence segmentation using lemmatizer's method
+        doc = self.lemmatizer.get_sentences(passage)
 
         # Lemmatize passage into the "kept token stream" you already defined
         # Each element: (surface_orig, lemma_norm, upos, source)
@@ -259,7 +264,11 @@ class LemmaSalienceRanker:
             upos = (d["upos"] or "").upper()
 
             # Get SUBTLEX frequency if available
-            subtlex_freq = self.frequency_map.get(lemma, 0)
+            # Use lemmatizer's frequency if we have access to it
+            if hasattr(self.lemmatizer, 'get_lemma_frequency'):
+                subtlex_freq = self.lemmatizer.get_lemma_frequency(lemma)
+            else:
+                subtlex_freq = self.frequency_map.get(lemma, 0)
             
             # Use raw frequency directly for continuous scoring
             # Normalize by dividing by 1000 to keep scores in reasonable range
