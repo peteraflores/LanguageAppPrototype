@@ -1,8 +1,8 @@
 from lemmatizer import Lemmatizer
 from lemma_salience import LemmaSalienceRanker, load_known_lemmas_csv, load_lemma_frequency_csv
 from greek_adaptive_rewriter import GreekAdaptiveRewriter
-# from openai_llm_client import OpenAILLMClient
-from corning_llm_client import CorningLLMClient
+from openai_llm_client import OpenAILLMClient
+
 import os
 import sys
 import io
@@ -46,9 +46,9 @@ ranker = LemmaSalienceRanker(
     w_frequency=10.0  # Make frequency the dominant factor
 )
 
-# --- LLM backend ---
-# llm = OpenAILLMClient()  # optionally: OpenAILLMClient(model="gpt-4.1-mini")
-llm = CorningLLMClient()
+
+llm = OpenAILLMClient()
+
 
 # --- rewriter ---
 rewriter = GreekAdaptiveRewriter(
