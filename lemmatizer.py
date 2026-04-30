@@ -88,8 +88,6 @@ class Lemmatizer:
             tokenize_no_ssplit=False,
             use_gpu=False,
             verbose=False,
-            model_dir=stanza_model_dir,              # NEW
-            download_method=stanza_download_method,  # NEW
         )
         self.udpipe_model = UDPipeModel.load(udpipe_model_path)
         if self.udpipe_model is None:

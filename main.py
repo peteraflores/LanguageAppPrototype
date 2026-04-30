@@ -16,7 +16,6 @@ lemmatizer = Lemmatizer(
     lemma_frequency_path="lemma_frequency.csv",
     surface_lexicon_path="surface_lemma_lexicon.csv",
     udpipe_model_path="greek-gdt-ud-2.5-191206.udpipe",
-    stanza_model_dir=r"stanza_resources",
     stanza_download_method=None,  # enforce offline/no-download behavior
 )
 
